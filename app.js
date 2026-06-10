@@ -4,10 +4,11 @@ import { getLandmarker, loadVideoFile, scanVideo, captureFrames, seek, drawSkele
 import { analyzeSwing, scoreSwing, alignTimelines } from './metrics.js';
 import { analyzeSquat, gradeOf } from './squat.js';
 import { SwingDetector, pickCue, summarizeSession } from './cage.js';
+import { buildGhost, drawGhost, ghostPhaseNotes } from './ghost.js';
 
 const $ = (id) => document.getElementById(id);
 const VIEWS = ['sportHome', 'homeView', 'uploadView', 'progressView', 'errorView',
-  'squatView', 'reportView', 'gameView', 'tutorialView', 'compareView', 'progressTrackView',
+  'squatView', 'ghostView', 'reportView', 'gameView', 'tutorialView', 'compareView', 'progressTrackView',
   'cageSetupView', 'cageView', 'cageSummaryView'];
 
 const state = {
@@ -192,7 +193,7 @@ function videoBlock(videoEl, frames, extraDraw) {
     idx = Math.max(0, Math.min(frames.length - 1, idx));
     try { await seek(videoEl, frames[idx].t); } catch { /* keep last decoded frame */ }
     drawSkeleton(canvas, videoEl, frames[idx]);
-    extraDraw?.(canvas, frames[idx]);
+    extraDraw?.(canvas, frames[idx], idx);
     return idx;
   };
   return { wrap, showFrame };
@@ -491,6 +492,139 @@ function renderSquat() {
   }
 }
 
+/* ---------- mode: swing ghost ---------- */
+
+const GHOST_FAIL_COPY = {
+  front_view: `<h2>We can't draw an honest ghost on this video</h2>
+    <p>You're facing the camera in this clip. The ghost is a side-view model — overlaying it on a front view would line up wrong and mislead you, so we don't.</p>
+    <p class="hint"><b>Film from the side</b>: camera at waist height, 8–12 feet away, whole body in frame — and the ghost will appear.</p>`,
+  missing_moments: `<h2>We can't draw an honest ghost on this video</h2>
+    <p>We couldn't pin down enough of your swing's checkpoints (stance, contact, finish) in this clip to sync a ghost to it.</p>
+    <p class="hint">Try a clearer side-on video of one full swing — slow-motion helps a lot.</p>`,
+};
+
+function renderGhost() {
+  const view = $('ghostView');
+  const { frames, analysis: a } = state.swingA;
+  view.innerHTML = '';
+
+  const videoEl = $('videoA');
+  const aspect = videoEl.videoWidth ? videoEl.videoHeight / videoEl.videoWidth : 1;
+  const ghost = buildGhost(a, frames, aspect);
+
+  const hero = document.createElement('div');
+  hero.className = 'card';
+  hero.innerHTML = `<h2>👻 Swing Ghost</h2>
+    <p>The white ghost is a <b>model swing</b> — drawn at your height, standing where you stood, swinging your way ${ghost.ok && ghost.dir === -1 ? '(lefty, like you)' : ''} — synced to your swing's checkpoints. Don't read numbers; <b>look</b> at where your blue skeleton and the ghost part ways.</p>`;
+  view.append(hero);
+
+  if (!ghost.ok) {
+    const why = document.createElement('div');
+    why.className = 'card';
+    why.innerHTML = GHOST_FAIL_COPY[ghost.reason] || GHOST_FAIL_COPY.missing_moments;
+    view.append(why, newSwingBtn('ghost'));
+    return show('ghostView');
+  }
+
+  let ghostOn = true;
+  const card = document.createElement('div');
+  card.className = 'card';
+  const { wrap, showFrame } = videoBlock(videoEl, frames, (canvas, _frame, idx) => {
+    if (ghostOn) drawGhost(canvas, ghost.poseAt(idx));
+  });
+  card.append(wrap);
+
+  const legend = document.createElement('p');
+  legend.className = 'ghostLegend';
+  legend.innerHTML = '<span class="lgYou">— you</span> <span class="lgGhost">— ghost (model swing)</span>';
+  card.append(legend);
+
+  // One source of truth for "we're looking at frame idx".
+  const notes = ghostPhaseNotes(a);
+  const noteBox = document.createElement('div');
+  noteBox.className = 'ghostNote';
+  const phaseAnchors = notes
+    .map((n) => [a.keyMoments[n.key], n])
+    .sort((x, y) => x[0] - y[0]);
+  const noteFor = (idx) => {
+    let cur = phaseAnchors[0][1];
+    for (const [i, n] of phaseAnchors) if (idx >= i) cur = n;
+    return cur;
+  };
+  const setNote = (idx) => {
+    const n = noteFor(idx);
+    noteBox.innerHTML = `<div class="title">${esc(n.label)} — what the ghost is doing</div>
+      <div class="detail">${esc(n.model)}</div>` +
+      n.yours.map((y) => `<div class="yours">In your swing — ${esc(y)}</div>`).join('');
+    for (const c of chips.children) c.classList.toggle('active', c.dataset.key === n.key);
+  };
+
+  const scrub = document.createElement('input');
+  scrub.type = 'range'; scrub.min = 0; scrub.max = frames.length - 1; scrub.step = 1;
+  const showAt = async (idx) => { idx = await showFrame(idx); scrub.value = idx; setNote(idx); return idx; };
+  scrub.oninput = () => { showFrame(Number(scrub.value)); setNote(Number(scrub.value)); };
+  card.append(scrub);
+
+  const chips = document.createElement('div');
+  chips.className = 'chips';
+  const momentLabels = [['stance', 'Stance'], ['strideStart', 'Stride'], ['footPlant', 'Foot plant'], ['contact', 'Contact ⚡'], ['finish', 'Finish']];
+  for (const [key, label] of momentLabels) {
+    const idx = a.keyMoments[key];
+    if (idx === null || idx === undefined) continue;
+    const chip = document.createElement('button');
+    chip.className = 'chip'; chip.textContent = label; chip.dataset.key = key;
+    chip.onclick = () => showAt(idx);
+    chips.append(chip);
+  }
+  const ghostChip = document.createElement('button');
+  ghostChip.className = 'chip active'; ghostChip.textContent = '👻 ghost on';
+  ghostChip.onclick = () => {
+    ghostOn = !ghostOn;
+    ghostChip.textContent = ghostOn ? '👻 ghost on' : '👻 ghost off';
+    ghostChip.classList.toggle('active', ghostOn);
+    showFrame(Number(scrub.value));
+  };
+  chips.append(ghostChip);
+  card.append(chips, noteBox);
+
+  // Step through the swing window frame by frame (seek-paced — speed
+  // depends on the device, which is fine: this is for studying, not tempo).
+  let playing = false;
+  const playBtn = document.createElement('button');
+  playBtn.className = 'btn primary';
+  playBtn.textContent = '▶ Play your swing + ghost';
+  playBtn.onclick = async () => {
+    if (playing) { playing = false; return; }
+    playing = true;
+    playBtn.textContent = '⏸ Stop';
+    const start = Math.max(0, (a.keyMoments.strideStart ?? a.keyMoments.stance) - 3);
+    for (let i = start; i <= a.keyMoments.finish; i++) {
+      if (!playing || view.classList.contains('hidden')) break;
+      await showAt(i);
+    }
+    playing = false;
+    playBtn.textContent = '▶ Play your swing + ghost';
+  };
+  const btnRow = document.createElement('div');
+  btnRow.className = 'buttons';
+  btnRow.append(playBtn);
+  card.append(btnRow);
+  view.append(card);
+
+  const hCard = document.createElement('div');
+  hCard.className = 'card honesty';
+  hCard.innerHTML = `<h2>🪞 What the ghost is — and isn't</h2><ul>
+    <li><b>It's a synthesized model</b> built from standard coaching checkpoints (quiet head, hands back at foot plant, firm front side, hips before hands, balanced finish) — not motion capture of one specific pro.</li>
+    <li><b>It's synced to YOUR phases.</b> It shows shape differences, not timing — a slow swing and a quick swing meet the same ghost.</li>
+    <li><b>It's a 2D side-view model.</b> The closer your camera is to a true side-on view, the more honest the overlay. On front-facing video we refuse to draw it.</li>
+    <li><b>One body, many good swings.</b> Pros differ from each other plenty. Treat the ghost as a reference for the big checkpoints, not a pixel-perfect target.</li>
+  </ul>`;
+  view.append(hCard, newSwingBtn('ghost'));
+
+  show('ghostView');
+  showAt(a.keyMoments.contact);
+}
+
 /* ---------- mode: coach report ---------- */
 
 function renderReport() {
@@ -787,6 +921,7 @@ function renderProgress() {
 /* ---------- routing ---------- */
 
 const UPLOAD_COPY = {
+  ghost: ['Swing Ghost', 'Record or pick one swing, filmed from the side. We’ll draw a model swing — at your size — right onto your video so you can see what to change.'],
   report: ['Coach Report', 'Record or pick a video of one swing. Slow-motion from the side works best — and we’ll tell you how much we could trust the result.'],
   game: ['Swing Score', 'One swing, one score. Slow-mo side view scores most fairly — we only score what we can actually measure.'],
   tutorial: ['Swing School', 'Upload one swing and we’ll walk you through it phase by phase — your video becomes the lesson.'],
@@ -795,6 +930,7 @@ const UPLOAD_COPY = {
 
 function renderMode(mode, extra = {}) {
   if (mode === 'report') renderReport();
+  else if (mode === 'ghost') renderGhost();
   else if (mode === 'game') renderGame(extra);
   else if (mode === 'tutorial') renderTutorial();
   else goHome();
@@ -846,5 +982,16 @@ window.__poc = {
     state.sport = 'squat';
     state.squat = { frames, analysis: analyzeSquat(frames) };
     renderSquat();
+  },
+  // e2e hook: drive the ghost UI from synthetic frames. The video element
+  // stays empty, so give the overlay wrap a shape to render into.
+  injectGhost(frames) {
+    state.sport = 'baseball';
+    state.mode = 'ghost';
+    const analysis = analyzeSwing(frames);
+    state.swingA = { frames, analysis, score: scoreSwing(analysis) };
+    renderGhost();
+    const wrap = $('ghostView').querySelector('.videoWrap');
+    if (wrap) { wrap.style.aspectRatio = '3 / 4'; wrap.querySelector('video').style.display = 'none'; }
   },
 };

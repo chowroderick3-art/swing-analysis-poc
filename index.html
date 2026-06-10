@@ -18,7 +18,7 @@
     <section id="sportHome">
       <button class="modeCard" data-sport="baseball">
         <span class="modeIcon">⚾</span>
-        <span><b>Baseball swing</b><br /><small>Five ways to work on your swing: coach report, swing score, swing school, side-by-side, progress.</small></span>
+        <span><b>Baseball swing</b><br /><small>Swing Ghost, live Cage Mode, coach report, swing score, swing school, side-by-side, progress.</small></span>
       </button>
       <button class="modeCard" data-sport="squat">
         <span class="modeIcon">🏋️</span>
@@ -30,9 +30,13 @@
     <!-- ============ BASEBALL: mode picker ============ -->
     <section id="homeView" class="hidden">
       <button class="backBtn" data-back-sports>← All sports</button>
+      <button class="modeCard" data-mode="ghost">
+        <span class="modeIcon">👻</span>
+        <span><b>Swing Ghost <small>· NEW</small></b><br /><small>A model swing drawn at your size, in your video. Scrub frame-by-frame and see exactly where your shape differs.</small></span>
+      </button>
       <button class="modeCard" data-mode="cage">
         <span class="modeIcon">🥅</span>
-        <span><b>Cage Mode <small>· NEW</small></b><br /><small>Live coaching: prop up your phone, just keep swinging — hear one spoken cue after every swing.</small></span>
+        <span><b>Cage Mode</b><br /><small>Live coaching: prop up your phone, just keep swinging — hear one spoken cue after every swing.</small></span>
       </button>
       <button class="modeCard" data-mode="report">
         <span class="modeIcon">🎯</span>
@@ -124,6 +128,7 @@
 
     <!-- ============ mode result views (filled by app.js) ============ -->
     <section id="squatView" class="hidden"></section>
+    <section id="ghostView" class="hidden"></section>
     <section id="reportView" class="hidden"></section>
     <section id="gameView" class="hidden"></section>
     <section id="tutorialView" class="hidden"></section>
@@ -136,7 +141,7 @@
   </main>
 
   <footer>
-    <p>FormLab POC v4 · body-only analysis (no bat/bar tracking yet) · thresholds are heuristics, not medical/coaching standards.</p>
+    <p>FormLab POC v5 · body-only analysis (no bat/bar tracking yet) · thresholds are heuristics, not medical/coaching standards.</p>
   </footer>
 
   <script type="module" src="app.js"></script>

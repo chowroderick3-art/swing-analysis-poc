@@ -12,7 +12,7 @@ length of the clip.
 
 | Sport | Archetype | What you get |
 |---|---|---|
-| ⚾ **Baseball swing** | single explosive event | Five experiences (below) |
+| ⚾ **Baseball swing** | single explosive event | Swing Ghost + five more experiences (below) |
 | 🏋️ **Squat** | rep-based set | Coach report + **rep-by-rep scorecard**: depth per rep, back angle, descent control, fatigue across the set |
 
 The pose engine, capture pipeline, quality/confidence grading, and honesty
@@ -31,7 +31,24 @@ score, and your most common fault. Debug/tuning: open with `?debug=1`
 `cage.js` `CAGE_TUNING`; `?cpu=1` forces the CPU pose delegate.
 The plan + replication pattern for other sports: `docs/cage-mode-plan.md`.
 
-## Baseball's five modes
+## 👻 Swing Ghost (the "what should I look like?" answer)
+
+Upload one side-on swing and a **model swing skeleton** is drawn directly
+onto your video — at your measured height, standing on your ground line,
+mirrored to your handedness, and synced to *your* detected checkpoints
+(stance → stride → foot plant → contact → finish). Scrub frame-by-frame
+and see exactly where your shape parts ways with the model; each phase
+shows what the ghost is doing and, where measured, what you did.
+
+Honesty rules: the ghost is a synthesized model built from standard
+coaching checkpoints (`ghost.js` keyframes, IK-solved, unit-tested to pass
+our own fundamentals checks) — not mocap of a specific pro; it is
+phase-synced so it shows shape, never timing; and it is refused outright
+on front-facing videos where a 2D side-view overlay would mislead.
+Visual QA: `node scripts/ghost_preview.mjs` renders the model filmstrip;
+`node scripts/ghost_e2e.mjs` screenshots the real view headlessly.
+
+## Baseball's other modes
 
 | Mode | What it does |
 |---|---|
@@ -77,6 +94,7 @@ The plan + replication pattern for other sports: `docs/cage-mode-plan.md`.
 | `metrics.js` | Baseball pack + shared geometry (pure functions, unit-testable) |
 | `squat.js` | Squat pack: rep segmentation + per-rep metrics (pure functions) |
 | `cage.js` | Cage Mode: live swing detector + one-cue engine (pure functions) |
+| `ghost.js` | Swing Ghost: model-swing keyframes, IK, body-fit + phase-sync (pure functions) |
 | `test/` | Unit tests: synthetic swing + synthetic squat set, scoring, alignment (`npm test`) |
 | `scripts/e2e.mjs` | Headless-Chrome end-to-end check (`node scripts/e2e.mjs <video>`) |
 | `vendor/`, `models/` | Vendored MediaPipe Tasks Vision + pose model (no CDN dependency) |

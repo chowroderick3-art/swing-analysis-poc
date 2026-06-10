@@ -158,6 +158,15 @@ button:disabled { opacity: 0.4; }
 .histRow:last-child { border-bottom: none; }
 .btn.danger { background: #7f1d1d; color: #fecaca; }
 
+/* ---------- swing ghost ---------- */
+.ghostLegend { font-size: 0.82rem; color: var(--muted); margin: 6px 0 0; }
+.ghostLegend .lgYou { color: var(--accent); font-weight: 700; margin-right: 12px; }
+.ghostLegend .lgGhost { color: #f1f5f9; font-weight: 700; text-shadow: 0 0 6px rgba(190,225,255,0.8); }
+.ghostNote { background: #0b1220; border: 1px solid #334155; border-radius: 12px; padding: 10px 12px; margin-top: 10px; }
+.ghostNote .title { font-weight: 700; font-size: 0.92rem; }
+.ghostNote .detail { color: var(--muted); font-size: 0.9rem; margin-top: 2px; }
+.ghostNote .yours { color: var(--accent); font-size: 0.88rem; margin-top: 4px; }
+
 /* ---------- cage mode ---------- */
 .setupList { padding-left: 20px; }
 .setupList li { margin-bottom: 8px; font-size: 0.95rem; }

@@ -1,6 +1,6 @@
 {
   "name": "swing-analysis-poc",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "Proof of concept: in-browser baseball swing analysis from phone video",

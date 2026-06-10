@@ -36,6 +36,7 @@ export async function getLandmarker(onProgress) {
 // - listener is always removed, success or timeout
 export function seek(video, t, timeoutMs = 8000) {
   const dur = video.duration || 0;
+  if (!dur) return Promise.resolve();   // nothing loaded — nothing to seek
   t = Math.min(Math.max(t, 0), Math.max(0, dur - 0.001));
   if (video.readyState >= 2 && Math.abs(video.currentTime - t) < 0.001) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -190,8 +191,9 @@ const CONNECTIONS = [
 ];
 
 export function drawSkeleton(canvas, video, frame, color = 'rgba(56,189,248,0.9)') {
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
+  // Fallback size keeps overlays drawable when no video is loaded (e2e).
+  canvas.width = video.videoWidth || 720;
+  canvas.height = video.videoHeight || 960;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!frame) return;
