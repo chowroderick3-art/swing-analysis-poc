@@ -52,12 +52,31 @@ function syntheticSquatSet() {
   return frames;
 }
 
+// Stage the test video inside the served directory so the fake camera can
+// stream it (cleaned up at the end; gitignored).
+import { copyFileSync, rmSync } from 'node:fs';
+const servedVideo = new URL('../.e2e_camera.mp4', import.meta.url).pathname;
+copyFileSync(video, servedVideo);
+
 try {
   const page = await browser.newPage();
   await page.setViewport({ width: 430, height: 900, deviceScaleFactor: 2 });
   page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 
-  await page.goto('http://localhost:8123/', { waitUntil: 'networkidle0', timeout: 60000 });
+  // Fake live camera: getUserMedia returns a looped real-swing video stream.
+  await page.evaluateOnNewDocument(() => {
+    navigator.mediaDevices.getUserMedia = async () => {
+      const v = document.createElement('video');
+      v.src = '/.e2e_camera.mp4';
+      v.loop = true; v.muted = true; v.playsInline = true;
+      v.style.position = 'fixed'; v.style.left = '-9999px';
+      document.body.append(v);          // keep the element rendering frames
+      await v.play();
+      return v.captureStream();
+    };
+  });
+
+  await page.goto('http://localhost:8123/?cpu=1', { waitUntil: 'networkidle0', timeout: 60000 }); // headless GL is software-emulated; CPU delegate is ~6x faster here
   console.log('page loaded — sport picker');
   await page.screenshot({ path: '/tmp/poc_home.png' });
   await page.click('[data-sport="baseball"]');
@@ -158,6 +177,7 @@ try {
     return { ok: a.ok, reps: a.repCount, bands: a.reps.map((r) => r.depthBand), metrics: a.metrics.map((m) => `${m.id}:${m.band}`) };
   }, squatFrames);
   await page.waitForFunction(visible('squatView'), { timeout: 10000 });
+  await sleep(1500);                                          // count-up animation
   const scorecardRows = await page.$$eval('#squatView .histRow', (els) => els.length);
   console.log('SQUAT:', JSON.stringify(squat), '· scorecard rows =', scorecardRows);
   if (!squat.ok || squat.reps !== 3 || scorecardRows !== 3) {
@@ -165,8 +185,33 @@ try {
   }
   await page.screenshot({ path: '/tmp/poc_squat.png', fullPage: true });
 
-  console.log('ALL MODES OK. screenshots: /tmp/poc_{home,baseball_modes,report,game,tutorial,progress,compare,squat}.png');
+  // --- Cage Mode (live loop against the fake camera) ---
+  await page.evaluate(() => window.__poc.startMode('cage'));
+  await page.waitForFunction(visible('cageSetupView'), { timeout: 10000 });
+  await page.click('#cageStartBtn');
+  await page.waitForFunction(visible('cageView'), { timeout: 60000 });
+  console.log('cage live view running — waiting for swing detection on looped clip…');
+  let reps = 0;
+  try {
+    await page.waitForFunction(
+      () => !document.getElementById('cageReps').textContent.startsWith('0'),
+      { timeout: 90000, polling: 500 },
+    );
+    reps = await page.$eval('#cageReps', (el) => parseInt(el.textContent, 10));
+  } catch { /* counted below */ }
+  const cageCue = await page.$eval('#cageCue', (el) => el.textContent);
+  console.log('CAGE: reps =', reps, '· cue =', JSON.stringify(cageCue));
+  await page.screenshot({ path: '/tmp/poc_cage.png', fullPage: true });
+  if (reps < 1) { console.error('CAGE FAILURE: no swings detected on looped clip'); process.exit(1); }
+  await page.click('#cageEndBtn');
+  await page.waitForFunction(visible('cageSummaryView'), { timeout: 10000 });
+  const cageSummary = await page.$eval('#cageSummaryView', (el) => el.textContent.slice(0, 200));
+  console.log('CAGE SUMMARY:', JSON.stringify(cageSummary));
+  await page.screenshot({ path: '/tmp/poc_cage_summary.png', fullPage: true });
+
+  console.log('ALL MODES OK. screenshots: /tmp/poc_{home,baseball_modes,report,game,tutorial,progress,compare,squat,cage,cage_summary}.png');
 } finally {
+  rmSync(servedVideo, { force: true });
   await browser.close();
   server.kill();
 }

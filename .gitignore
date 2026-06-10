@@ -2,3 +2,4 @@ node_modules/
 package-lock.json
 *.png
 .DS_Store
+.e2e_camera.mp4

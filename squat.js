@@ -14,6 +14,8 @@ export const SQUAT_BANDS = {
   goodBackTiltMax: 65,     // degrees from vertical at the bottom; beyond = folding over
   fastDescentS: 0.45,      // descent quicker than this = "control the drop"
   fatigueDropoff: 0.15,    // last-rep depth >=15% shallower than best = fatigue signal
+  hipsFirstTiltGain: 7,    // degrees of extra forward tilt during early ascent = hips shot up
+  kneeCaveRatio: 0.85,     // front view: knee width / ankle width below this = caving in
   minFramesPerRep: 5,
   minVisibility: 0.5,
   minPersonHeight: 0.25,
@@ -70,7 +72,7 @@ export function segmentReps(frames, bodyH) {
   return { reps, standingY };
 }
 
-function repMetrics(frames, rep, bodyH) {
+function repMetrics(frames, rep, bodyH, view) {
   const bottom = frames[rep.bottomIdx].landmarks;
   const hipVsKnee = (hipY(bottom) - kneeY(bottom)) / bodyH;  // + = hip below knee
   const depthBand = hipVsKnee >= 0 ? 'deep'
@@ -80,6 +82,29 @@ function repMetrics(frames, rep, bodyH) {
   const kneeAngle = jointAngle(bottom[LM.L_HIP], bottom[LM.L_KNEE], bottom[LM.L_ANKLE]);
   const descentS = frames[rep.bottomIdx].t - frames[rep.startIdx].t;
   const ascentS = frames[rep.endIdx].t - frames[rep.bottomIdx].t;
+
+  // "Hips shooting up first" (good-morning fault): if the torso tips
+  // further forward during the first half of the ascent, the hips are
+  // rising faster than the shoulders. Side view only.
+  let hipsFirst = false;
+  if (view !== 'front') {
+    const midAscent = Math.min(rep.endIdx, rep.bottomIdx + Math.max(1, Math.floor((rep.endIdx - rep.bottomIdx) / 2)));
+    let maxTiltAscent = backTilt;
+    for (let i = rep.bottomIdx; i <= midAscent; i++) {
+      maxTiltAscent = Math.max(maxTiltAscent, spineTilt(frames[i].landmarks));
+    }
+    hipsFirst = maxTiltAscent - backTilt > SQUAT_BANDS.hipsFirstTiltGain;
+  }
+
+  // Knee cave (valgus): front view only — knees drifting inside the ankles
+  // at the bottom of the rep.
+  let kneeCaveRatio = null;
+  if (view === 'front') {
+    const kneeW = Math.abs(bottom[LM.L_KNEE].x - bottom[LM.R_KNEE].x);
+    const ankleW = Math.abs(bottom[LM.L_ANKLE].x - bottom[LM.R_ANKLE].x);
+    kneeCaveRatio = ankleW > 0.01 ? kneeW / ankleW : null;
+  }
+
   return {
     depthBand,
     hipVsKnee,
@@ -88,10 +113,34 @@ function repMetrics(frames, rep, bodyH) {
     kneeAngle,
     descentS,
     ascentS,
+    hipsFirst,
+    kneeCaveRatio,
     bottomIdx: rep.bottomIdx,
     startIdx: rep.startIdx,
     endIdx: rep.endIdx,
   };
+}
+
+// Per-rep score over the parts measurable from this view; normalized so an
+// unmeasurable part shrinks the scorecard instead of penalizing (same rule
+// as the baseball Swing Score).
+export function scoreRep(rep, view) {
+  const parts = [];
+  if (view !== 'front') {
+    parts.push(['depth', rep.depthBand === 'deep' ? 1 : rep.depthBand === 'parallel' ? 0.75 : 0.3, 40]);
+    parts.push(['lean', rep.backTilt <= SQUAT_BANDS.goodBackTiltMax ? 1 : 0.4, 20]);
+    parts.push(['rise', rep.hipsFirst ? 0.4 : 1, 20]);
+  } else if (rep.kneeCaveRatio !== null) {
+    parts.push(['knees', rep.kneeCaveRatio >= SQUAT_BANDS.kneeCaveRatio ? 1 : 0.4, 50]);
+  }
+  parts.push(['tempo', rep.descentS >= SQUAT_BANDS.fastDescentS ? 1 : 0.4, 20]);
+  const possible = parts.reduce((s, [, , w]) => s + w, 0);
+  const earned = parts.reduce((s, [, c, w]) => s + c * w, 0);
+  return possible ? Math.round((earned / possible) * 100) : null;
+}
+
+export function gradeOf(score) {
+  return score >= 90 ? 'A' : score >= 80 ? 'B+' : score >= 70 ? 'B' : score >= 60 ? 'C+' : score >= 50 ? 'C' : 'Keep working';
 }
 
 function meanVisibility(frames) {
@@ -109,8 +158,8 @@ export function analyzeSquat(frames) {
   const { reps: rawReps } = segmentReps(frames, bodyH);
   if (rawReps.length === 0) return { ok: false, reason: 'no_reps' };
 
-  const reps = rawReps.map((r) => repMetrics(frames, r, bodyH));
   const view = classifyView(frames[0].landmarks, bodyH);
+  const reps = rawReps.map((r) => repMetrics(frames, r, bodyH, view));
   const visibility = meanVisibility(frames);
   const sideish = view === 'side' || view === 'angled';
 
@@ -122,6 +171,13 @@ export function analyzeSquat(frames) {
   const tiltMax = Math.max(...reps.map((r) => r.backTilt));
   const fastReps = reps.filter((r) => r.descentS > 0 && r.descentS < SQUAT_BANDS.fastDescentS).length;
   const fatigued = reps.length >= 3 && lastDepth <= bestDepth * (1 - SQUAT_BANDS.fatigueDropoff);
+  const hipsFirstReps = reps.filter((r) => r.hipsFirst).length;
+  const cavingReps = reps.filter((r) => r.kneeCaveRatio !== null && r.kneeCaveRatio < SQUAT_BANDS.kneeCaveRatio).length;
+  const repScores = reps.map((r) => scoreRep(r, view));
+  const setScore = repScores.some((x) => x === null) || repScores.length === 0
+    ? null
+    : Math.round(repScores.reduce((a, b) => a + b, 0) / repScores.length);
+  const bestRepIdx = repScores.indexOf(Math.max(...repScores.filter((x) => x !== null)));
   const depthConsistency = depths.length > 1
     ? 1 - (Math.max(...depths) - Math.min(...depths)) / (bestDepth || 1)
     : 1;
@@ -136,33 +192,52 @@ export function analyzeSquat(frames) {
     tips: [],
   };
   if (!quality.checks.personSize) quality.tips.push('Get closer — the lifter should fill most of the frame.');
-  if (!quality.checks.sideView) quality.tips.push('Film from the side — depth and back angle can’t be judged from the front.');
+  if (!quality.checks.sideView) quality.tips.push('From the front we can check knee tracking but not depth or back angle — film from the side for the full analysis.');
   if (!quality.checks.visibility) quality.tips.push('Make sure the whole body stays visible, including the feet.');
   quality.score = Math.min(100,
     (quality.checks.personSize ? 30 : 10) + (quality.checks.visibility ? 25 : 8) +
     (quality.checks.sideView ? 30 : 10) + (quality.checks.sampling ? 15 : 6));
 
   const conf = (base) => {
-    if (!sideish) return 'low';
     if (!quality.checks.visibility || !quality.checks.personSize) return base === 'high' ? 'medium' : 'low';
     return base;
   };
 
-  const metrics = [
-    {
-      id: 'depth',
-      label: 'Depth',
-      display: `${deepCount} of ${reps.length} reps at/below parallel`,
-      band: deepCount === reps.length ? 'good' : deepCount >= reps.length / 2 ? 'mixed' : 'shallow',
-      confidence: conf('high'),
-    },
-    {
-      id: 'backAngle',
-      label: 'Back angle (max lean at bottom)',
-      display: `${Math.round(tiltMax)}° from vertical`,
-      band: tiltMax <= SQUAT_BANDS.goodBackTiltMax ? 'good' : 'folded',
+  const metrics = [];
+  if (sideish) {
+    metrics.push(
+      {
+        id: 'depth',
+        label: 'Depth',
+        display: `${deepCount} of ${reps.length} reps at/below parallel`,
+        band: deepCount === reps.length ? 'good' : deepCount >= reps.length / 2 ? 'mixed' : 'shallow',
+        confidence: conf('high'),
+      },
+      {
+        id: 'backAngle',
+        label: 'Back angle (max lean at bottom)',
+        display: `${Math.round(tiltMax)}° from vertical`,
+        band: tiltMax <= SQUAT_BANDS.goodBackTiltMax ? 'good' : 'folded',
+        confidence: conf('medium'),
+      },
+      {
+        id: 'hipsFirst',
+        label: 'Hip-shoulder rise (out of the hole)',
+        display: hipsFirstReps === 0 ? 'hips and chest rise together' : `hips shot up first on ${hipsFirstReps} of ${reps.length} reps`,
+        band: hipsFirstReps === 0 ? 'good' : 'fault',
+        confidence: conf('medium'),
+      },
+    );
+  } else {
+    metrics.push({
+      id: 'kneeCave',
+      label: 'Knee tracking (cave-in)',
+      display: cavingReps === 0 ? 'knees track over the feet on every rep' : `knees caved inward on ${cavingReps} of ${reps.length} reps`,
+      band: cavingReps === 0 ? 'good' : 'caving',
       confidence: conf('medium'),
-    },
+    });
+  }
+  metrics.push(
     {
       id: 'tempo',
       label: 'Descent control',
@@ -177,7 +252,7 @@ export function analyzeSquat(frames) {
       band: fatigued ? 'fading' : depthConsistency >= 0.85 ? 'good' : 'varied',
       confidence: conf('high'),
     },
-  ];
+  );
 
   const COPY = {
     depth: {
@@ -192,6 +267,14 @@ export function analyzeSquat(frames) {
     tempo: {
       good: ['Controlled descent', 'You own the lowering phase on every rep — that control is where strength is built.'],
       rushed: ['Dropping into the hole', 'Some reps free-fall down. A 2-second descent keeps tension on the muscle and is much kinder to the knees and hips.'],
+    },
+    hipsFirst: {
+      good: ['Strong drive out of the hole', 'Your hips and chest rise together — the legs are pushing the floor away instead of the back taking over.'],
+      fault: ['Hips shooting up first', 'On some reps your hips rise before your chest, turning the squat into a back lift. Cue "chest up first" and try pausing one second at the bottom.'],
+    },
+    kneeCave: {
+      good: ['Knees tracking well', 'Your knees stay out over your feet through the whole rep — that\u2019s exactly the tracking you want.'],
+      caving: ['Knees caving in', 'Your knees drift inward under load — a common pattern worth fixing early. Cue "spread the floor" and consider a band around the knees on warm-up sets.'],
     },
     consistency: {
       good: ['Repeatable reps', 'Your depth barely varies across the set — that consistency is what quality volume looks like.'],
@@ -215,10 +298,36 @@ export function analyzeSquat(frames) {
       notMeasured.push({ label: m.label, reason: 'Measured, but with low confidence from this camera angle/quality — treat as a rough indication.' });
     }
   }
+  if (sideish) {
+    notMeasured.push({
+      label: 'Knee cave (valgus)',
+      reason: 'Only visible from the front. Film your next set facing the camera and we\u2019ll check knee tracking instead.',
+    });
+  } else {
+    notMeasured.push({
+      label: 'Depth, back angle, hip drive',
+      reason: 'Only visible from the side. Film your next set side-on and we\u2019ll measure depth and torso position instead.',
+    });
+  }
   notMeasured.push({
-    label: 'Bar path in 3D, load on the bar, knee cave (valgus), force output',
-    reason: 'These need 3D capture, a front view, or sensors. A single side-view camera can’t measure them honestly, so this analysis doesn’t guess at them.',
+    label: 'Bar path in 3D, load on the bar, force output',
+    reason: 'These need 3D capture or sensors. A single phone camera can\u2019t measure them honestly, so this analysis doesn\u2019t guess at them.',
   });
+
+  // Coach-style set summary, composed strictly from the measurements above.
+  const summaryBits = [];
+  summaryBits.push(`${reps.length} rep${reps.length > 1 ? 's' : ''} tracked${sideish ? '' : ' (front view)'}.`);
+  if (sideish) {
+    summaryBits.push(deepCount === reps.length
+      ? 'Every rep hit parallel or below.'
+      : `${deepCount} of ${reps.length} hit depth.`);
+    if (hipsFirstReps > 0) summaryBits.push(`Hips shot up early on ${hipsFirstReps}.`);
+  } else if (cavingReps > 0) {
+    summaryBits.push(`Knees caved on ${cavingReps}.`);
+  }
+  if (fatigued) summaryBits.push('Depth faded late in the set — fatigue showed up.');
+  if (fastReps > 0) summaryBits.push(`${fastReps} descent${fastReps > 1 ? 's were' : ' was'} rushed.`);
+  if (setScore !== null) summaryBits.push(`Best rep: #${bestRepIdx + 1}.`);
 
   return {
     ok: true,
@@ -227,6 +336,11 @@ export function analyzeSquat(frames) {
     view,
     reps,
     repCount: reps.length,
+    repScores,
+    setScore,
+    setGrade: setScore !== null ? gradeOf(setScore) : null,
+    bestRepIdx,
+    summary: summaryBits.join(' '),
     quality: { ...quality, visibility },
     metrics,
     feedback: { strengths: strengths.slice(0, 3), improvements: improvements.slice(0, 3) },

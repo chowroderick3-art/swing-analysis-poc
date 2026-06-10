@@ -1,12 +1,14 @@
 // FormLab: sport packs on one shared, honest analysis engine.
 // Baseball keeps its five experiences; squat gets report + rep scorecard.
-import { getLandmarker, loadVideoFile, scanVideo, captureFrames, seek, drawSkeleton } from './engine.js';
+import { getLandmarker, loadVideoFile, scanVideo, captureFrames, seek, drawSkeleton, detectLive } from './engine.js';
 import { analyzeSwing, scoreSwing, alignTimelines } from './metrics.js';
-import { analyzeSquat } from './squat.js';
+import { analyzeSquat, gradeOf } from './squat.js';
+import { SwingDetector, pickCue, summarizeSession } from './cage.js';
 
 const $ = (id) => document.getElementById(id);
 const VIEWS = ['sportHome', 'homeView', 'uploadView', 'progressView', 'errorView',
-  'squatView', 'reportView', 'gameView', 'tutorialView', 'compareView', 'progressTrackView'];
+  'squatView', 'reportView', 'gameView', 'tutorialView', 'compareView', 'progressTrackView',
+  'cageSetupView', 'cageView', 'cageSummaryView'];
 
 const state = {
   sport: null,         // 'baseball' | 'squat'
@@ -180,7 +182,7 @@ async function handleFile(file) {
 
 /* ---------- shared result widgets ---------- */
 
-function videoBlock(videoEl, frames) {
+function videoBlock(videoEl, frames, extraDraw) {
   const wrap = document.createElement('div');
   wrap.className = 'videoWrap';
   const canvas = document.createElement('canvas');
@@ -190,9 +192,32 @@ function videoBlock(videoEl, frames) {
     idx = Math.max(0, Math.min(frames.length - 1, idx));
     try { await seek(videoEl, frames[idx].t); } catch { /* keep last decoded frame */ }
     drawSkeleton(canvas, videoEl, frames[idx]);
+    extraDraw?.(canvas, frames[idx]);
     return idx;
   };
   return { wrap, showFrame };
+}
+
+// Squat overlay: dashed line at knee height + hip marker — you can SEE
+// each rep's depth against parallel, not just read a number.
+function squatDepthGauge(canvas, frame) {
+  if (!canvas.width) return;
+  const lm = frame.landmarks;
+  const ctx = canvas.getContext('2d');
+  const kneeYpx = ((lm[25].y + lm[26].y) / 2) * canvas.height;
+  const hip = { x: ((lm[23].x + lm[24].x) / 2) * canvas.width, y: ((lm[23].y + lm[24].y) / 2) * canvas.height };
+  const below = hip.y >= kneeYpx - canvas.height * 0.005;
+  ctx.save();
+  ctx.setLineDash([10, 8]);
+  ctx.lineWidth = Math.max(2, canvas.width / 260);
+  ctx.strokeStyle = below ? 'rgba(74,222,128,0.95)' : 'rgba(251,191,36,0.95)';
+  ctx.beginPath(); ctx.moveTo(0, kneeYpx); ctx.lineTo(canvas.width, kneeYpx); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = below ? '#4ade80' : '#fbbf24';
+  ctx.beginPath(); ctx.arc(hip.x, hip.y, Math.max(5, canvas.width / 110), 0, Math.PI * 2); ctx.fill();
+  ctx.font = `${Math.max(14, canvas.width / 30)}px sans-serif`;
+  ctx.fillText(below ? 'below parallel ✓' : 'above parallel', 10, kneeYpx - 8);
+  ctx.restore();
 }
 
 function navButtons(extraLabel, extraFn) {
@@ -211,6 +236,142 @@ function navButtons(extraLabel, extraFn) {
 
 const newSwingBtn = (mode) => navButtons('🎥 New swing', () => startMode(mode, { forceUpload: true }));
 
+/* ---------- cage mode: live swings, spoken cues ---------- */
+
+const cage = {
+  running: false,
+  stream: null,
+  detector: null,
+  swings: [],
+  praiseIdx: 0,
+  facing: 'environment',
+  wakeLock: null,
+  debug: new URLSearchParams(location.search).has('debug'),
+};
+
+function speak(text) {
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.05;
+    speechSynthesis.speak(u);
+  } catch { /* no voices (headless) — UI text still shows the cue */ }
+}
+
+async function cageStart() {
+  const status = $('cageSetupStatus');
+  try {
+    status.textContent = 'Loading the analysis engine…';
+    speak('');                                  // unlock TTS inside the tap
+    await getLandmarker(() => {});
+    status.textContent = 'Starting camera…';
+    cage.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: cage.facing, width: { ideal: 1280 } },
+      audio: false,
+    });
+    const video = $('cageVideo');
+    video.srcObject = cage.stream;
+    await video.play();
+    try { cage.wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* optional */ }
+
+    cage.detector = new SwingDetector();
+    cage.swings = [];
+    cage.praiseIdx = 0;
+    cage.running = true;
+    $('cageReps').textContent = '0 swings';
+    $('cageScore').textContent = '—';
+    $('cageCue').textContent = 'Watching… take your first swing.';
+    $('cageDebug').classList.toggle('hidden', !cage.debug);
+    show('cageView');
+    cageLoop(video);
+  } catch (e) {
+    status.textContent = '';
+    fail(e.name === 'NotAllowedError'
+      ? 'Camera access was blocked. Allow camera for this site in your browser settings, then try again.'
+      : `Couldn’t start the camera (${e.message}).`);
+  }
+}
+
+function cageLoop(video) {
+  const canvas = $('cageCanvas');
+  const schedule = video.requestVideoFrameCallback
+    ? (cb) => video.requestVideoFrameCallback(() => cb())
+    : (cb) => requestAnimationFrame(() => cb());
+  const step = () => {
+    if (!cage.running) return;
+    let lm = null;
+    try { lm = detectLive(video); } catch { /* transient decode hiccup */ }
+    const t = performance.now() / 1000;
+    if (lm) {
+      drawSkeleton(canvas, video, { landmarks: lm });
+      const evt = cage.detector.push({ t, landmarks: lm });
+      if (evt?.type === 'swing') cageSwing(evt);
+    }
+    const stateLabel = { waiting: lm ? '👀 hold still…' : '🔍 looking for you…', armed: '✅ ready — swing away', swinging: '⚡', cooldown: '🗣️' };
+    $('cageStatus').textContent = stateLabel[cage.detector.state] || '…';
+    if (cage.debug) {
+      $('cageDebug').textContent = `state=${cage.detector.state} speed=${cage.detector.lastSpeed.toFixed(2)} bodyH/s · peak needs ≥3.0 · frames buffered=${cage.detector.buffer.length}`;
+    }
+    schedule(step);
+  };
+  schedule(step);
+}
+
+function cageSwing(evt) {
+  const analysis = analyzeSwing(evt.frames);
+  const score = analysis.ok ? scoreSwing(analysis) : null;
+  const scoreVal = score?.score ?? null;
+  const cue = pickCue(analysis, scoreVal, cage.praiseIdx);
+  if (cue.tone === 'praise') cage.praiseIdx++;
+  cage.swings.push({ score: scoreVal, cue });
+
+  $('cageReps').textContent = `${cage.swings.length} swing${cage.swings.length > 1 ? 's' : ''}`;
+  $('cageScore').textContent = scoreVal !== null ? scoreVal : '—';
+  $('cageCue').textContent = cue.text;
+  speak(scoreVal !== null ? `${scoreVal}. ${cue.text}` : cue.text);
+}
+
+function cageEnd() {
+  cage.running = false;
+  try { cage.stream?.getTracks().forEach((tr) => tr.stop()); } catch { /* already stopped */ }
+  try { cage.wakeLock?.release(); } catch { /* released */ }
+  const s = summarizeSession(cage.swings);
+  if (s.reps > 0 && s.bestScore !== null) {
+    saveHistoryEntry({ sport: 'baseball', mode: 'cage', score: s.bestScore, grade: gradeOf(s.bestScore), quality: null });
+  }
+  renderCageSummary(s);
+}
+
+function renderCageSummary(s) {
+  const view = $('cageSummaryView');
+  view.innerHTML = '';
+  const hero = document.createElement('div');
+  hero.className = 'card center';
+  hero.innerHTML = s.reps === 0
+    ? '<h2>🥅 Session over</h2><p>No swings detected this session. Check the setup tips and run it back.</p>'
+    : `<h2>🥅 Session: ${s.reps} swing${s.reps > 1 ? 's' : ''}</h2>
+       ${s.bestScore !== null ? `<div class="bigScore">${s.bestScore}</div><div class="grade">best swing (#${s.bestRep}) · avg ${s.avgScore}</div>` : ''}
+       <p>${s.praises} swing${s.praises === 1 ? '' : 's'} earned a "good swing."</p>
+       ${s.topCue ? `<p><b>Work on:</b> ${esc(s.topCue.text)} <span class="muted">(came up ${s.topCue.count}×)</span></p>` : '<p>No repeated fault — keep stacking reps.</p>'}`;
+  const again = document.createElement('button');
+  again.className = 'btn primary';
+  again.textContent = '🥅 Run it back';
+  again.onclick = () => { state.mode = 'cage'; show('cageSetupView'); };
+  hero.append(again);
+  view.append(hero, navButtons());
+  show('cageSummaryView');
+}
+
+$('cageStartBtn').onclick = cageStart;
+$('cageEndBtn').onclick = cageEnd;
+$('cageFlip').onclick = async () => {
+  cage.facing = cage.facing === 'environment' ? 'user' : 'environment';
+  if (!cage.running) return;
+  cage.running = false;
+  try { cage.stream?.getTracks().forEach((tr) => tr.stop()); } catch { /* switching */ }
+  await cageStart();
+};
+
 /* ---------- sport: squat (report + rep scorecard signature) ---------- */
 
 const DEPTH_BADGE = {
@@ -224,10 +385,39 @@ function renderSquat() {
   const { frames, analysis: a } = state.squat;
   view.innerHTML = '';
 
+  // 1) THE ANSWER: score + grade + coach summary + retry. Everything else
+  // is supporting detail below.
+  const hero = document.createElement('div');
+  hero.className = 'card center';
+  hero.innerHTML = `
+    <h2>🏋️ Set Score</h2>
+    ${a.setScore !== null ? `<div class="bigScore" id="setScore">0</div><div class="grade">${esc(a.setGrade)}</div>` : '<p>Not enough measured to score this set fairly.</p>'}
+    <p>${esc(a.summary)}</p>`;
+  const retry = document.createElement('button');
+  retry.className = 'btn primary';
+  retry.textContent = '🎥 Run it back — film another set';
+  retry.onclick = () => startSport('squat', { forceUpload: true });
+  hero.append(retry);
+  view.append(hero);
+
+  // 2) Top three fixes, numbered and actionable.
+  const fixes = document.createElement('div');
+  fixes.className = 'card';
+  fixes.innerHTML = '<h2>🎯 Your top ' + (a.feedback.improvements.length || '0') + ' fix' + (a.feedback.improvements.length === 1 ? '' : 'es') + '</h2>' +
+    (a.feedback.improvements.length
+      ? a.feedback.improvements.map((item, i) => `
+        <div class="fb"><div class="title">${i + 1}. ${esc(item.title)}</div>
+        <div class="detail">${esc(item.detail)}</div>
+        <div class="measured">${dot(item.confidence)}we measured: ${esc(item.measured)}</div></div>`).join('')
+      : '<p>Nothing major to fix in this set — keep stacking sets like that one. 💪</p>');
+  view.append(fixes);
+
+  // 3) The proof: video with depth gauge + rep chips + per-rep scorecard.
   const card = document.createElement('div');
   card.className = 'card';
-  card.innerHTML = `<h2>🏋️ Your set — ${a.repCount} rep${a.repCount > 1 ? 's' : ''}</h2>`;
-  const { wrap, showFrame } = videoBlock($('videoA'), frames);
+  card.innerHTML = `<h2>See it yourself — ${a.repCount} rep${a.repCount > 1 ? 's' : ''}</h2>
+    <p class="hint">The dashed line is parallel (knee height). Green dot = your hips got below it.</p>`;
+  const { wrap, showFrame } = videoBlock($('videoA'), frames, a.view !== 'front' ? squatDepthGauge : null);
   card.append(wrap);
 
   const scrub = document.createElement('input');
@@ -240,21 +430,21 @@ function renderSquat() {
   a.reps.forEach((rep, i) => {
     const chip = document.createElement('button');
     chip.className = 'chip';
-    chip.textContent = `Rep ${i + 1}`;
+    chip.textContent = `Rep ${i + 1}${i === a.bestRepIdx ? ' ⭐' : ''}`;
     chip.onclick = () => { showFrame(rep.bottomIdx); scrub.value = rep.bottomIdx; };
     chips.append(chip);
   });
   card.append(chips);
   view.append(card);
 
-  // Signature experience: the rep-by-rep scorecard.
   const sc = document.createElement('div');
   sc.className = 'card';
   sc.innerHTML = '<h2>📋 Rep scorecard</h2>' + a.reps.map((rep, i) => {
-    const [icon, label] = DEPTH_BADGE[rep.depthBand];
-    return `<div class="histRow"><span>${icon} Rep ${i + 1} — ${label}</span>
-      <span class="muted">${Math.round(rep.backTilt)}° lean · ${rep.descentS.toFixed(1)}s down</span></div>`;
-  }).join('') + '<p class="hint">Tap a rep chip above to see its bottom position with the skeleton overlay.</p>';
+    const [icon, label] = a.view !== 'front' ? DEPTH_BADGE[rep.depthBand] : ['🦵', rep.kneeCaveRatio !== null && rep.kneeCaveRatio < 0.85 ? 'knees caved' : 'knees tracked'];
+    const score = a.repScores[i] !== null ? `<b>${a.repScores[i]}</b>` : '';
+    return `<div class="histRow"><span>${icon} Rep ${i + 1}${i === a.bestRepIdx ? ' ⭐' : ''} — ${label}</span>
+      <span class="muted">${score} · ${rep.descentS.toFixed(1)}s down</span></div>`;
+  }).join('') + '<p class="hint">⭐ = your best rep. Tap its chip above and study that bottom position — then make every rep look like it.</p>';
   view.append(sc);
 
   const q = a.quality;
@@ -275,21 +465,30 @@ function renderSquat() {
   const sCard = document.createElement('div'); sCard.className = 'card';
   sCard.innerHTML = '<h2>✅ What you’re doing well</h2>' +
     (a.feedback.strengths.length ? a.feedback.strengths.map(fbHtml).join('') : '<p class="hint">Nothing stood out as a clear strength — see the quality tips above.</p>');
-  const iCard = document.createElement('div'); iCard.className = 'card';
-  iCard.innerHTML = '<h2>🔧 What to work on</h2>' +
-    (a.feedback.improvements.length ? a.feedback.improvements.map(fbHtml).join('') : '<p class="hint">No clear issues at this confidence level. Strong set!</p>');
   const mCard = document.createElement('div'); mCard.className = 'card';
   mCard.innerHTML = '<h2>📐 All measurements</h2>' + a.metrics.map((m) => `
     <div class="metric"><span class="label">${dot(m.confidence)}${esc(m.label)}</span><span class="value">${esc(m.display)}</span></div>`).join('');
   const hCard = document.createElement('div'); hCard.className = 'card honesty';
   hCard.innerHTML = '<h2>🪞 What we could NOT measure</h2><ul>' +
     a.notMeasured.map((n) => `<li><b>${esc(n.label)}</b> — ${esc(n.reason)}</li>`).join('') + '</ul>';
-  view.append(sCard, iCard, mCard, hCard,
+  view.append(sCard, mCard, hCard,
     navButtons('🎥 New set', () => startSport('squat', { forceUpload: true })));
 
   show('squatView');
-  showFrame(a.reps[0].bottomIdx);
-  scrub.value = a.reps[0].bottomIdx;
+  const focusIdx = a.reps[a.bestRepIdx]?.bottomIdx ?? a.reps[0].bottomIdx;
+  showFrame(focusIdx);
+  scrub.value = focusIdx;
+
+  if (a.setScore !== null) {
+    const el = $('setScore');
+    const t0 = performance.now();
+    const tick = (t) => {
+      const k = Math.min(1, (t - t0) / 1200);
+      el.textContent = Math.round(a.setScore * (1 - Math.pow(1 - k, 3)));
+      if (k < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
 }
 
 /* ---------- mode: coach report ---------- */
@@ -571,7 +770,7 @@ function renderProgress() {
   list.innerHTML = '<h2>History</h2>' + [...h].reverse().map((e) => `
     <div class="histRow">
       <span>${new Date(e.ts).toLocaleDateString()} ${new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-      <span>${e.score !== null ? `<b>${e.score}</b> (${esc(e.grade)})` : 'unscored'} · cam ${e.quality}</span>
+      <span>${e.score !== null ? `<b>${e.score}</b> (${esc(e.grade)})` : 'unscored'}${e.mode === 'cage' ? ' · 🥅 cage' : e.quality !== null && e.quality !== undefined ? ` · cam ${e.quality}` : ''}</span>
     </div>`).join('');
   view.append(list);
 
@@ -604,6 +803,7 @@ function renderMode(mode, extra = {}) {
 function startMode(mode, { forceUpload = false } = {}) {
   state.sport = 'baseball';
   state.mode = mode;
+  if (mode === 'cage') return show('cageSetupView');
   if (mode === 'progress') return renderProgress();
   if (mode === 'compare') {
     state.compareStage = 1;

@@ -126,3 +126,105 @@ test('3D/load limitations always disclosed', () => {
   assert.ok(/bar path/i.test(labels));
   assert.ok(/valgus|knee cave/i.test(labels));
 });
+
+import { scoreRep, gradeOf } from '../squat.js';
+
+// Variant generator: hips rise first on ascent (lean increases early ascent)
+function hipsFirstSet() {
+  const fps = 15, frames = [];
+  let t = 0;
+  const push = (lm) => { frames.push({ t, landmarks: lm }); t += 1 / fps; };
+  for (let i = 0; i < 10; i++) push(clone(standingPose()));
+  for (let rep = 0; rep < 3; rep++) {
+    for (let phase = 0; phase < 2; phase++) {
+      for (let s = 1; s <= 12; s++) {
+        const k = phase === 0 ? s / 12 : 1 - s / 12;
+        const lm = clone(standingPose());
+        const drop = 0.14 * k;
+        lm[LM.L_HIP].y += drop; lm[LM.R_HIP].y += drop;
+        lm[LM.NOSE].y += drop * 0.9;
+        lm[LM.L_SHOULDER].y += drop * 0.92; lm[LM.R_SHOULDER].y += drop * 0.92;
+        // descent: modest lean; early ascent: lean INCREASES (hips shoot up)
+        const ascendK = phase === 1 ? (1 - k) : 0;          // 0->1 over ascent
+        const extraLean = phase === 1 && ascendK < 0.6 ? 0.18 * (ascendK / 0.6) : 0;
+        lm[LM.L_SHOULDER].x += 0.05 * k + extraLean;
+        lm[LM.R_SHOULDER].x += 0.05 * k + extraLean;
+        lm[LM.L_KNEE].y += drop * 0.15; lm[LM.R_KNEE].y += drop * 0.15;
+        push(lm);
+      }
+    }
+    for (let i = 0; i < 6; i++) push(clone(standingPose()));
+  }
+  return frames;
+}
+
+// Front-view set: shoulders/hips wide, knees cave inward at the bottom
+function frontViewSet({ cave = true } = {}) {
+  const fps = 15, frames = [];
+  let t = 0;
+  const push = (lm) => { frames.push({ t, landmarks: lm }); t += 1 / fps; };
+  const frontPose = () => {
+    const lm = clone(standingPose());
+    lm[LM.L_SHOULDER].x = 0.62; lm[LM.R_SHOULDER].x = 0.38;   // wide = facing camera
+    lm[LM.L_HIP].x = 0.58; lm[LM.R_HIP].x = 0.42;
+    lm[LM.L_KNEE].x = 0.58; lm[LM.R_KNEE].x = 0.42;
+    lm[LM.L_ANKLE].x = 0.58; lm[LM.R_ANKLE].x = 0.42;
+    return lm;
+  };
+  for (let i = 0; i < 10; i++) push(frontPose());
+  for (let rep = 0; rep < 3; rep++) {
+    for (let phase = 0; phase < 2; phase++) {
+      for (let s = 1; s <= 12; s++) {
+        const k = phase === 0 ? s / 12 : 1 - s / 12;
+        const lm = frontPose();
+        const drop = 0.14 * k;
+        lm[LM.L_HIP].y += drop; lm[LM.R_HIP].y += drop;
+        lm[LM.NOSE].y += drop * 0.9;
+        lm[LM.L_SHOULDER].y += drop * 0.92; lm[LM.R_SHOULDER].y += drop * 0.92;
+        lm[LM.L_KNEE].y += drop * 0.15; lm[LM.R_KNEE].y += drop * 0.15;
+        if (cave) { lm[LM.L_KNEE].x -= 0.05 * k; lm[LM.R_KNEE].x += 0.05 * k; }
+        push(lm);
+      }
+    }
+    for (let i = 0; i < 6; i++) push(frontPose());
+  }
+  return frames;
+}
+
+test('set score: clean set scores high, faulty set scores lower', () => {
+  const clean = analyzeSquat(syntheticSet({ depths: [0.15, 0.15, 0.15] }));
+  assert.ok(clean.setScore >= 90, `clean set ~A, got ${clean.setScore}`);
+  assert.equal(clean.setGrade, gradeOf(clean.setScore));
+  assert.equal(clean.repScores.length, 3);
+
+  const sloppy = analyzeSquat(syntheticSet({ depths: [0.11, 0.11, 0.11], descentFrames: 4 }));
+  assert.ok(sloppy.setScore < clean.setScore, 'shallow+rushed scores lower');
+});
+
+test('hips shooting up first detected and coached', () => {
+  const r = analyzeSquat(hipsFirstSet());
+  const m = r.metrics.find((x) => x.id === 'hipsFirst');
+  assert.equal(m.band, 'fault');
+  assert.ok(r.feedback.improvements.some((i) => i.id === 'hipsFirst'));
+
+  const cleanR = analyzeSquat(syntheticSet());
+  assert.equal(cleanR.metrics.find((x) => x.id === 'hipsFirst').band, 'good');
+});
+
+test('front view: knee cave measured, depth honestly declared unmeasurable', () => {
+  const r = analyzeSquat(frontViewSet({ cave: true }));
+  assert.equal(r.view, 'front');
+  const cave = r.metrics.find((m) => m.id === 'kneeCave');
+  assert.equal(cave.band, 'caving');
+  assert.ok(!r.metrics.some((m) => m.id === 'depth'), 'no depth metric from the front');
+  assert.ok(r.notMeasured.some((n) => /depth/i.test(n.label)), 'depth listed as not measurable');
+
+  const good = analyzeSquat(frontViewSet({ cave: false }));
+  assert.equal(good.metrics.find((m) => m.id === 'kneeCave').band, 'good');
+});
+
+test('set summary mentions rep count and best rep', () => {
+  const r = analyzeSquat(syntheticSet());
+  assert.ok(/3 reps tracked/.test(r.summary), r.summary);
+  assert.ok(/Best rep/.test(r.summary), r.summary);
+});

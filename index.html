@@ -22,7 +22,7 @@
       </button>
       <button class="modeCard" data-sport="squat">
         <span class="modeIcon">🏋️</span>
-        <span><b>Squat</b><br /><small>Film a set, get a rep-by-rep scorecard: depth, back angle, tempo, and when fatigue sets in.</small></span>
+        <span><b>Squat</b><br /><small>Film a set → get a Set Score, your top fixes, and a rep-by-rep scorecard with a depth gauge on your video.</small></span>
       </button>
       <p class="hint center">More movements coming — pitching, golf, tennis serve, basketball shot all run on this same engine.</p>
     </section>
@@ -30,6 +30,10 @@
     <!-- ============ BASEBALL: mode picker ============ -->
     <section id="homeView" class="hidden">
       <button class="backBtn" data-back-sports>← All sports</button>
+      <button class="modeCard" data-mode="cage">
+        <span class="modeIcon">🥅</span>
+        <span><b>Cage Mode <small>· NEW</small></b><br /><small>Live coaching: prop up your phone, just keep swinging — hear one spoken cue after every swing.</small></span>
+      </button>
       <button class="modeCard" data-mode="report">
         <span class="modeIcon">🎯</span>
         <span><b>Coach Report</b><br /><small>The full honest assessment: key moments, measurements, strengths &amp; fixes.</small></span>
@@ -80,6 +84,44 @@
       <div class="buttons"><button class="btn" data-back>Back to modes</button></div>
     </section>
 
+    <!-- ============ CAGE MODE (live) ============ -->
+    <section id="cageSetupView" class="card hidden">
+      <button class="backBtn" data-back>← All modes</button>
+      <h2>🥅 Cage Mode</h2>
+      <p>Hands-free live coaching. Set it up once, then just swing:</p>
+      <ol class="setupList">
+        <li>📱 Prop your phone or use a tripod — <b>side-on to you</b>, about waist height</li>
+        <li>📏 Stand 8–12 feet away, whole body in frame</li>
+        <li>🔊 Turn your volume up — feedback is spoken out loud</li>
+        <li>⚾ After each swing, hold your finish for a beat — you'll hear your score and one cue</li>
+      </ol>
+      <p class="hint">Nothing is recorded — the camera feed is analyzed live on your phone and thrown away.</p>
+      <div class="buttons"><button id="cageStartBtn" class="btn primary">▶ Start Cage Mode</button></div>
+      <p class="hint center" id="cageSetupStatus"></p>
+    </section>
+
+    <section id="cageView" class="hidden">
+      <div class="card">
+        <div class="videoWrap">
+          <video id="cageVideo" playsinline muted autoplay></video>
+          <canvas id="cageCanvas"></canvas>
+        </div>
+        <div class="cageHud">
+          <span class="chip" id="cageStatus">starting…</span>
+          <span class="chip" id="cageReps">0 swings</span>
+          <button class="chip" id="cageFlip">🔄 flip camera</button>
+        </div>
+        <div class="center">
+          <div class="bigScore" id="cageScore">—</div>
+          <p id="cageCue" class="cageCue">Get set up, then take your first swing.</p>
+        </div>
+        <p class="hint center hidden" id="cageDebug"></p>
+        <div class="buttons"><button id="cageEndBtn" class="btn">⏹ End session</button></div>
+      </div>
+    </section>
+
+    <section id="cageSummaryView" class="hidden"></section>
+
     <!-- ============ mode result views (filled by app.js) ============ -->
     <section id="squatView" class="hidden"></section>
     <section id="reportView" class="hidden"></section>
@@ -94,7 +136,7 @@
   </main>
 
   <footer>
-    <p>FormLab POC v3 · body-only analysis (no bat/bar tracking yet) · thresholds are heuristics, not medical/coaching standards.</p>
+    <p>FormLab POC v4 · body-only analysis (no bat/bar tracking yet) · thresholds are heuristics, not medical/coaching standards.</p>
   </footer>
 
   <script type="module" src="app.js"></script>

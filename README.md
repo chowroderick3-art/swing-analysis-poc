@@ -20,6 +20,17 @@ rules are shared; each sport adds a "pack": key-moment/rep detection,
 metrics with thresholds, and coaching copy. Next packs (pitching, golf,
 tennis serve, basketball shot) reuse one of these two archetypes.
 
+## 🥅 Cage Mode (live coaching)
+
+Prop the phone side-on, tap Start, and just swing. Pose runs on the live
+camera feed (nothing recorded); a state machine detects each completed
+swing, the swing is scored, and ONE spoken cue plays within ~1s — praise
+or the single highest-priority fix. Session summary shows reps, best/avg
+score, and your most common fault. Debug/tuning: open with `?debug=1`
+(live wrist-speed + detector state on screen); thresholds in
+`cage.js` `CAGE_TUNING`; `?cpu=1` forces the CPU pose delegate.
+The plan + replication pattern for other sports: `docs/cage-mode-plan.md`.
+
 ## Baseball's five modes
 
 | Mode | What it does |
@@ -65,6 +76,7 @@ tennis serve, basketball shot) reuse one of these two archetypes.
 | `engine.js` | Shared pose-model + video-scanning engine |
 | `metrics.js` | Baseball pack + shared geometry (pure functions, unit-testable) |
 | `squat.js` | Squat pack: rep segmentation + per-rep metrics (pure functions) |
+| `cage.js` | Cage Mode: live swing detector + one-cue engine (pure functions) |
 | `test/` | Unit tests: synthetic swing + synthetic squat set, scoring, alignment (`npm test`) |
 | `scripts/e2e.mjs` | Headless-Chrome end-to-end check (`node scripts/e2e.mjs <video>`) |
 | `vendor/`, `models/` | Vendored MediaPipe Tasks Vision + pose model (no CDN dependency) |

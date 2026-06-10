@@ -19,7 +19,11 @@ export async function getLandmarker(onProgress) {
     runningMode: 'VIDEO',
     numPoses: 1,
   });
+  // ?cpu=1 skips the GPU delegate — useful on devices/browsers where WebGL
+  // is software-emulated (slower than the CPU XNNPACK path).
+  const forceCpu = typeof location !== 'undefined' && new URLSearchParams(location.search).has('cpu');
   try {
+    if (forceCpu) throw new Error('cpu forced');
     landmarker = await PoseLandmarker.createFromOptions(fileset, opts('GPU'));
   } catch {
     landmarker = await PoseLandmarker.createFromOptions(fileset, opts('CPU'));
@@ -54,6 +58,12 @@ function detectAt(video) {
   fakeTs += 33.34;
   const res = landmarker.detectForVideo(video, fakeTs);
   return res.landmarks && res.landmarks.length ? res.landmarks[0] : null;
+}
+
+// Live-stream detection for Cage Mode: same model, same monotonic clock.
+// Call getLandmarker() once before using.
+export function detectLive(video) {
+  return detectAt(video);
 }
 
 export async function loadVideoFile(video, file) {

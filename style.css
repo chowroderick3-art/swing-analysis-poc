@@ -157,3 +157,10 @@ button:disabled { opacity: 0.4; }
 .histRow { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155; font-size: 0.9rem; }
 .histRow:last-child { border-bottom: none; }
 .btn.danger { background: #7f1d1d; color: #fecaca; }
+
+/* ---------- cage mode ---------- */
+.setupList { padding-left: 20px; }
+.setupList li { margin-bottom: 8px; font-size: 0.95rem; }
+.cageHud { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+.cageCue { font-size: 1.15rem; font-weight: 600; min-height: 2.6em; }
+#cageScore { color: var(--accent); }
