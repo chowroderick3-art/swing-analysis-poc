@@ -1,17 +1,19 @@
-// Five experiences on one shared, honest analysis engine:
-// report (coach assessment), game (swing score), tutorial (swing school),
-// compare (side-by-side), progress (local history).
-import { getLandmarker, loadVideoFile, scanVideo, seek, drawSkeleton } from './engine.js';
+// FormLab: sport packs on one shared, honest analysis engine.
+// Baseball keeps its five experiences; squat gets report + rep scorecard.
+import { getLandmarker, loadVideoFile, scanVideo, captureFrames, seek, drawSkeleton } from './engine.js';
 import { analyzeSwing, scoreSwing, alignTimelines } from './metrics.js';
+import { analyzeSquat } from './squat.js';
 
 const $ = (id) => document.getElementById(id);
-const VIEWS = ['homeView', 'uploadView', 'progressView', 'errorView',
-  'reportView', 'gameView', 'tutorialView', 'compareView', 'progressTrackView'];
+const VIEWS = ['sportHome', 'homeView', 'uploadView', 'progressView', 'errorView',
+  'squatView', 'reportView', 'gameView', 'tutorialView', 'compareView', 'progressTrackView'];
 
 const state = {
+  sport: null,         // 'baseball' | 'squat'
   mode: null,
   swingA: null,        // { frames, analysis, score }
   swingB: null,        // second swing (compare mode)
+  squat: null,         // { frames, analysis }
   compareStage: 0,
 };
 
@@ -30,7 +32,13 @@ function progress(label, frac, detail = '') {
 
 function fail(msg) { $('errorMsg').textContent = msg; show('errorView'); }
 
-function goHome() { state.mode = null; state.compareStage = 0; show('homeView'); }
+function showSports() { state.sport = null; state.mode = null; state.compareStage = 0; show('sportHome'); }
+// "home" for the current sport: baseball's mode picker, or the sport list.
+function goHome() {
+  state.mode = null; state.compareStage = 0;
+  if (state.sport === 'baseball') show('homeView');
+  else showSports();
+}
 
 function uploadScreen(title, blurb) {
   $('uploadTitle').textContent = title;
@@ -47,19 +55,24 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&
 
 const HISTORY_KEY = 'swingHistory';
 const loadHistory = () => { try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; } catch { return []; } };
-function saveHistoryEntry(swing) {
+// entries without a sport tag predate multi-sport and are baseball
+const baseballHistory = () => loadHistory().filter((e) => !e.sport || e.sport === 'baseball');
+function saveHistoryEntry(entry) {
   const h = loadHistory();
-  h.push({
-    ts: Date.now(),
+  h.push({ ts: Date.now(), ...entry });
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(-50)));
+}
+function saveSwingEntry(swing) {
+  saveHistoryEntry({
+    sport: 'baseball',
     score: swing.score?.score ?? null,
     grade: swing.score?.grade ?? null,
     quality: swing.analysis.quality.score,
     view: swing.analysis.view,
     metrics: swing.analysis.metrics.map((m) => ({ id: m.id, label: m.label, display: m.display, band: m.band, confidence: m.confidence })),
   });
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(-50)));
 }
-const personalBest = () => loadHistory().reduce((best, e) => (e.score !== null && e.score > best ? e.score : best), -1);
+const personalBest = () => baseballHistory().reduce((best, e) => (e.score !== null && e.score > best ? e.score : best), -1);
 
 /* ---------- analyze flow (shared by report / game / tutorial / compare) ---------- */
 
@@ -106,16 +119,43 @@ async function analyzeFile(file, videoEl) {
   }
 }
 
+async function analyzeSquatFile(file, videoEl) {
+  show('progressView');
+  $('tapToStart').classList.add('hidden');
+  await getLandmarker(progress);
+  await loadVideoFile(videoEl, file);
+  const stage = document.createElement('div');
+  stage.className = 'videoWrap';
+  stage.append(videoEl);
+  videoEl.classList.remove('offstage');
+  $('progressVideo').replaceChildren(stage);
+  try {
+    const frames = await captureFrames(videoEl, progress, ensurePlay, 'Watching the set…');
+    if (!frames || frames.length < 20) throw new Error('noperson');
+    const analysis = analyzeSquat(frames);
+    if (!analysis.ok) throw new Error(analysis.reason === 'no_reps' ? 'noreps' : 'noperson');
+    return { frames, analysis };
+  } finally {
+    videoEl.classList.add('offstage');
+    document.querySelector('main').append(videoEl);
+    $('progressVideo').replaceChildren();
+  }
+}
+
 async function handleFile(file) {
   try {
-    if (state.mode === 'compare' && state.compareStage === 2) {
+    if (state.sport === 'squat') {
+      state.squat = await analyzeSquatFile(file, $('videoA'));
+      saveHistoryEntry({ sport: 'squat', reps: state.squat.analysis.repCount, quality: state.squat.analysis.quality.score });
+      renderSquat();
+    } else if (state.mode === 'compare' && state.compareStage === 2) {
       state.swingB = await analyzeFile(file, $('videoB'));
-      saveHistoryEntry(state.swingB);
+      saveSwingEntry(state.swingB);
       renderCompare();
     } else {
       const prevBest = personalBest();
       state.swingA = await analyzeFile(file, $('videoA'));
-      saveHistoryEntry(state.swingA);
+      saveSwingEntry(state.swingA);
       if (state.mode === 'compare') {
         state.compareStage = 2;
         uploadScreen('Now the second swing', 'Upload the swing to compare against — a different day, a different player, or a different cue.');
@@ -129,6 +169,7 @@ async function handleFile(file) {
     fail(e.message === 'decode' ? 'This video format couldn’t be played in the browser. Try recording with the regular camera app.'
       : e.message === 'noperson' ? 'We couldn’t find a person clearly enough in this video. Make sure the whole body is visible and well lit, then try again.'
       : e.message === 'noswing' ? 'We found a person but couldn’t identify a swing in this clip. Try a video with one clear swing in it.'
+      : e.message === 'noreps' ? 'We found a person but no clear squat reps in this clip. Film the whole set from the side, with the lifter fully in frame.'
       : e.message === 'stalled' || e.message === 'seek_stuck' || e.message === 'seek timeout'
         ? `Your phone’s browser stopped serving video frames partway through — this can happen with long or 4K clips${diag}. Try trimming the clip to just the swing (5–10s) in your Photos app, then upload again.`
       : e.message === 'autoplay'
@@ -169,6 +210,87 @@ function navButtons(extraLabel, extraFn) {
 }
 
 const newSwingBtn = (mode) => navButtons('🎥 New swing', () => startMode(mode, { forceUpload: true }));
+
+/* ---------- sport: squat (report + rep scorecard signature) ---------- */
+
+const DEPTH_BADGE = {
+  deep: ['✅', 'below parallel'],
+  parallel: ['🟡', 'at parallel'],
+  shallow: ['🔺', 'above parallel'],
+};
+
+function renderSquat() {
+  const view = $('squatView');
+  const { frames, analysis: a } = state.squat;
+  view.innerHTML = '';
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `<h2>🏋️ Your set — ${a.repCount} rep${a.repCount > 1 ? 's' : ''}</h2>`;
+  const { wrap, showFrame } = videoBlock($('videoA'), frames);
+  card.append(wrap);
+
+  const scrub = document.createElement('input');
+  scrub.type = 'range'; scrub.min = 0; scrub.max = frames.length - 1; scrub.step = 1;
+  scrub.oninput = () => showFrame(Number(scrub.value));
+  card.append(scrub);
+
+  const chips = document.createElement('div');
+  chips.className = 'chips';
+  a.reps.forEach((rep, i) => {
+    const chip = document.createElement('button');
+    chip.className = 'chip';
+    chip.textContent = `Rep ${i + 1}`;
+    chip.onclick = () => { showFrame(rep.bottomIdx); scrub.value = rep.bottomIdx; };
+    chips.append(chip);
+  });
+  card.append(chips);
+  view.append(card);
+
+  // Signature experience: the rep-by-rep scorecard.
+  const sc = document.createElement('div');
+  sc.className = 'card';
+  sc.innerHTML = '<h2>📋 Rep scorecard</h2>' + a.reps.map((rep, i) => {
+    const [icon, label] = DEPTH_BADGE[rep.depthBand];
+    return `<div class="histRow"><span>${icon} Rep ${i + 1} — ${label}</span>
+      <span class="muted">${Math.round(rep.backTilt)}° lean · ${rep.descentS.toFixed(1)}s down</span></div>`;
+  }).join('') + '<p class="hint">Tap a rep chip above to see its bottom position with the skeleton overlay.</p>';
+  view.append(sc);
+
+  const q = a.quality;
+  const viewLabel = { side: 'side view 👍', angled: 'angled view', front: 'facing the camera' }[a.view];
+  const qCard = document.createElement('div');
+  qCard.className = 'card';
+  qCard.innerHTML = `
+    <h2>How much can you trust this?</h2>
+    <div class="scoreRow"><div class="scoreRing">${q.score}</div>
+    <div><p><b>Video quality score.</b> ${a.repCount} reps tracked (${viewLabel}).</p></div></div>
+    ${q.tips.length ? `<p class="hint"><b>Get a better analysis:</b> ${esc(q.tips.join(' '))}</p>` : '<p class="hint">Great capture — side view, whole body visible.</p>'}`;
+  view.append(qCard);
+
+  const fbHtml = (item) => `
+    <div class="fb"><div class="title">${esc(item.title)}</div>
+    <div class="measured">${dot(item.confidence)}measured: ${esc(item.measured)} · ${CONF_LABEL[item.confidence]}</div>
+    <div class="detail">${esc(item.detail)}</div></div>`;
+  const sCard = document.createElement('div'); sCard.className = 'card';
+  sCard.innerHTML = '<h2>✅ What you’re doing well</h2>' +
+    (a.feedback.strengths.length ? a.feedback.strengths.map(fbHtml).join('') : '<p class="hint">Nothing stood out as a clear strength — see the quality tips above.</p>');
+  const iCard = document.createElement('div'); iCard.className = 'card';
+  iCard.innerHTML = '<h2>🔧 What to work on</h2>' +
+    (a.feedback.improvements.length ? a.feedback.improvements.map(fbHtml).join('') : '<p class="hint">No clear issues at this confidence level. Strong set!</p>');
+  const mCard = document.createElement('div'); mCard.className = 'card';
+  mCard.innerHTML = '<h2>📐 All measurements</h2>' + a.metrics.map((m) => `
+    <div class="metric"><span class="label">${dot(m.confidence)}${esc(m.label)}</span><span class="value">${esc(m.display)}</span></div>`).join('');
+  const hCard = document.createElement('div'); hCard.className = 'card honesty';
+  hCard.innerHTML = '<h2>🪞 What we could NOT measure</h2><ul>' +
+    a.notMeasured.map((n) => `<li><b>${esc(n.label)}</b> — ${esc(n.reason)}</li>`).join('') + '</ul>';
+  view.append(sCard, iCard, mCard, hCard,
+    navButtons('🎥 New set', () => startSport('squat', { forceUpload: true })));
+
+  show('squatView');
+  showFrame(a.reps[0].bottomIdx);
+  scrub.value = a.reps[0].bottomIdx;
+}
 
 /* ---------- mode: coach report ---------- */
 
@@ -425,7 +547,7 @@ function sparkline(values, w = 320, h = 56) {
 
 function renderProgress() {
   const view = $('progressTrackView');
-  const h = loadHistory();
+  const h = baseballHistory();
   view.innerHTML = '';
 
   const card = document.createElement('div');
@@ -480,6 +602,7 @@ function renderMode(mode, extra = {}) {
 }
 
 function startMode(mode, { forceUpload = false } = {}) {
+  state.sport = 'baseball';
   state.mode = mode;
   if (mode === 'progress') return renderProgress();
   if (mode === 'compare') {
@@ -491,13 +614,37 @@ function startMode(mode, { forceUpload = false } = {}) {
   uploadScreen(...UPLOAD_COPY[mode]);
 }
 
-for (const cardBtn of document.querySelectorAll('.modeCard')) {
+function startSport(sport, { forceUpload = false } = {}) {
+  state.sport = sport;
+  if (sport === 'baseball') return show('homeView');
+  state.mode = 'squat';
+  if (!forceUpload && state.squat) return renderSquat();
+  uploadScreen('Squat set', 'Film a whole set from the side — lifter fully in frame, feet to head. We’ll find every rep and score each one.');
+}
+
+for (const sportBtn of document.querySelectorAll('[data-sport]')) {
+  sportBtn.onclick = () => startSport(sportBtn.dataset.sport);
+}
+for (const cardBtn of document.querySelectorAll('[data-mode]')) {
   cardBtn.onclick = () => startMode(cardBtn.dataset.mode);
 }
 for (const b of document.querySelectorAll('[data-back]')) b.onclick = goHome;
+for (const b of document.querySelectorAll('[data-back-sports]')) b.onclick = showSports;
 $('fileInput').addEventListener('change', (e) => {
   if (e.target.files && e.target.files[0]) handleFile(e.target.files[0]);
 });
 
 // expose for headless verification
-window.__poc = { state, startMode, get analysis() { return state.swingA?.analysis; }, get frames() { return state.swingA?.frames; } };
+window.__poc = {
+  state, startMode, startSport,
+  get analysis() { return state.swingA?.analysis; },
+  get frames() { return state.swingA?.frames; },
+  get squatAnalysis() { return state.squat?.analysis; },
+  // e2e hook: drive the squat UI from synthetic frames (no real lifting
+  // footage is available in CI; segmentation/metrics are unit-tested).
+  injectSquat(frames) {
+    state.sport = 'squat';
+    state.squat = { frames, analysis: analyzeSquat(frames) };
+    renderSquat();
+  },
+};

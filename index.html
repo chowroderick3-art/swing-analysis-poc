@@ -4,18 +4,32 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0f172a" />
-  <title>Swing Analysis — Proof of Concept</title>
+  <title>FormLab — movement analysis POC</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header>
-    <h1>⚾ Swing Analysis</h1>
-    <p class="tagline">Proof of concept — everything runs on your phone. Your video never leaves this page.</p>
+    <h1>🏃 FormLab</h1>
+    <p class="tagline">Movement analysis that runs entirely on your phone. Your video never leaves this page.</p>
   </header>
 
   <main>
-    <!-- ============ HOME: mode picker ============ -->
-    <section id="homeView">
+    <!-- ============ SPORT PICKER ============ -->
+    <section id="sportHome">
+      <button class="modeCard" data-sport="baseball">
+        <span class="modeIcon">⚾</span>
+        <span><b>Baseball swing</b><br /><small>Five ways to work on your swing: coach report, swing score, swing school, side-by-side, progress.</small></span>
+      </button>
+      <button class="modeCard" data-sport="squat">
+        <span class="modeIcon">🏋️</span>
+        <span><b>Squat</b><br /><small>Film a set, get a rep-by-rep scorecard: depth, back angle, tempo, and when fatigue sets in.</small></span>
+      </button>
+      <p class="hint center">More movements coming — pitching, golf, tennis serve, basketball shot all run on this same engine.</p>
+    </section>
+
+    <!-- ============ BASEBALL: mode picker ============ -->
+    <section id="homeView" class="hidden">
+      <button class="backBtn" data-back-sports>← All sports</button>
       <button class="modeCard" data-mode="report">
         <span class="modeIcon">🎯</span>
         <span><b>Coach Report</b><br /><small>The full honest assessment: key moments, measurements, strengths &amp; fixes.</small></span>
@@ -67,6 +81,7 @@
     </section>
 
     <!-- ============ mode result views (filled by app.js) ============ -->
+    <section id="squatView" class="hidden"></section>
     <section id="reportView" class="hidden"></section>
     <section id="gameView" class="hidden"></section>
     <section id="tutorialView" class="hidden"></section>
@@ -79,7 +94,7 @@
   </main>
 
   <footer>
-    <p>POC v2.2 · body-only analysis (no bat tracking yet) · thresholds are heuristics, not medical/coaching standards.</p>
+    <p>FormLab POC v3 · body-only analysis (no bat/bar tracking yet) · thresholds are heuristics, not medical/coaching standards.</p>
   </footer>
 
   <script type="module" src="app.js"></script>

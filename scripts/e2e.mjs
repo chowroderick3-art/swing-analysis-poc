@@ -19,14 +19,50 @@ const browser = await puppeteer.launch({
 
 const visible = (id) => `!document.getElementById('${id}').classList.contains('hidden')`;
 
+// Synthetic 3-rep squat set (2 deep, 1 shallow) — mirrors test/squat.test.mjs.
+function syntheticSquatSet() {
+  const base = () => {
+    const lm = Array.from({ length: 33 }, () => ({ x: 0.5, y: 0.5, visibility: 0.95 }));
+    const set = (i, x, y) => { lm[i] = { x, y, visibility: 0.95 }; };
+    set(0, 0.50, 0.20); set(11, 0.505, 0.32); set(12, 0.495, 0.32);
+    set(13, 0.52, 0.40); set(14, 0.48, 0.40); set(15, 0.52, 0.46); set(16, 0.48, 0.46);
+    set(23, 0.505, 0.48); set(24, 0.495, 0.48); set(25, 0.50, 0.59); set(26, 0.50, 0.59);
+    set(27, 0.50, 0.70); set(28, 0.50, 0.70);
+    return lm;
+  };
+  const frames = [];
+  let t = 0;
+  const push = (lm) => { frames.push({ t, landmarks: lm }); t += 1 / 15; };
+  for (let i = 0; i < 10; i++) push(base());
+  for (const depth of [0.15, 0.15, 0.11]) {
+    for (let phase = 0; phase < 2; phase++) {
+      for (let s = 1; s <= 12; s++) {
+        const k = phase === 0 ? s / 12 : 1 - s / 12;
+        const lm = base();
+        const drop = depth * k;
+        lm[23].y += drop; lm[24].y += drop; lm[0].y += drop * 0.9;
+        lm[11].y += drop * 0.92; lm[12].y += drop * 0.92;
+        lm[11].x += 0.06 * k; lm[12].x += 0.06 * k;
+        lm[25].y += drop * 0.15; lm[26].y += drop * 0.15;
+        push(lm);
+      }
+    }
+    for (let i = 0; i < 6; i++) push(base());
+  }
+  return frames;
+}
+
 try {
   const page = await browser.newPage();
   await page.setViewport({ width: 430, height: 900, deviceScaleFactor: 2 });
   page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 
   await page.goto('http://localhost:8123/', { waitUntil: 'networkidle0', timeout: 60000 });
-  console.log('page loaded — home view');
+  console.log('page loaded — sport picker');
   await page.screenshot({ path: '/tmp/poc_home.png' });
+  await page.click('[data-sport="baseball"]');
+  await page.waitForFunction(visible('homeView'), { timeout: 10000 });
+  await page.screenshot({ path: '/tmp/poc_baseball_modes.png' });
 
   const upload = async () => {
     const input = await page.$('#fileInput');
@@ -114,7 +150,22 @@ try {
   console.log('COMPARE: delta rows =', cmpRows);
   await page.screenshot({ path: '/tmp/poc_compare.png', fullPage: true });
 
-  console.log('ALL FIVE MODES OK. screenshots: /tmp/poc_{home,report,game,tutorial,progress,compare}.png');
+  // --- Squat (UI driven by synthetic frames; math is unit-tested) ---
+  const squatFrames = syntheticSquatSet();
+  const squat = await page.evaluate((frames) => {
+    window.__poc.injectSquat(frames);
+    const a = window.__poc.squatAnalysis;
+    return { ok: a.ok, reps: a.repCount, bands: a.reps.map((r) => r.depthBand), metrics: a.metrics.map((m) => `${m.id}:${m.band}`) };
+  }, squatFrames);
+  await page.waitForFunction(visible('squatView'), { timeout: 10000 });
+  const scorecardRows = await page.$$eval('#squatView .histRow', (els) => els.length);
+  console.log('SQUAT:', JSON.stringify(squat), '· scorecard rows =', scorecardRows);
+  if (!squat.ok || squat.reps !== 3 || scorecardRows !== 3) {
+    console.error('SQUAT UI FAILURE'); process.exit(1);
+  }
+  await page.screenshot({ path: '/tmp/poc_squat.png', fullPage: true });
+
+  console.log('ALL MODES OK. screenshots: /tmp/poc_{home,baseball_modes,report,game,tutorial,progress,compare,squat}.png');
 } finally {
   await browser.close();
   server.kill();

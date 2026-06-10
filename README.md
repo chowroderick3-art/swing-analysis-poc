@@ -1,13 +1,26 @@
-# ⚾ Swing Analysis — Proof of Concept
+# 🏃 FormLab — movement analysis POC
 
-Upload (or record) a video of a baseball swing and get an honest, measured
+Pick a sport, upload (or record) a video, and get an honest, measured
 assessment — entirely in your phone's browser. No app install, no backend:
 **the video never leaves your device.**
 
 **Try it:** open the GitHub Pages URL for this repo on your phone →
-pick a mode → record/choose a video of one swing → wait ~30–60s.
+pick a sport → record/choose a video → analysis runs in about the
+length of the clip.
 
-## Five modes, one honest engine
+## Sports (one honest engine, a signature experience each)
+
+| Sport | Archetype | What you get |
+|---|---|---|
+| ⚾ **Baseball swing** | single explosive event | Five experiences (below) |
+| 🏋️ **Squat** | rep-based set | Coach report + **rep-by-rep scorecard**: depth per rep, back angle, descent control, fatigue across the set |
+
+The pose engine, capture pipeline, quality/confidence grading, and honesty
+rules are shared; each sport adds a "pack": key-moment/rep detection,
+metrics with thresholds, and coaching copy. Next packs (pitching, golf,
+tennis serve, basketball shot) reuse one of these two archetypes.
+
+## Baseball's five modes
 
 | Mode | What it does |
 |---|---|
@@ -50,8 +63,9 @@ pick a mode → record/choose a video of one swing → wait ~30–60s.
 |---|---|
 | `index.html`, `style.css`, `app.js` | Mobile-first UI + the five mode views |
 | `engine.js` | Shared pose-model + video-scanning engine |
-| `metrics.js` | Pure metric/score/feedback functions (no DOM — unit-testable) |
-| `test/` | Unit tests: synthetic swing, scoring, timeline alignment (`npm test`) |
+| `metrics.js` | Baseball pack + shared geometry (pure functions, unit-testable) |
+| `squat.js` | Squat pack: rep segmentation + per-rep metrics (pure functions) |
+| `test/` | Unit tests: synthetic swing + synthetic squat set, scoring, alignment (`npm test`) |
 | `scripts/e2e.mjs` | Headless-Chrome end-to-end check (`node scripts/e2e.mjs <video>`) |
 | `vendor/`, `models/` | Vendored MediaPipe Tasks Vision + pose model (no CDN dependency) |
 | `.github/workflows/pages.yml` | Tests + deploy to GitHub Pages on push |

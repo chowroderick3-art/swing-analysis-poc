@@ -83,10 +83,12 @@ export async function loadVideoFile(video, file) {
 // After playback we *attempt* a fine seek-stepped pass around the swing
 // for denser sampling (the pipeline is warm by then); if seeks still
 // stall we keep the playback-captured frames. Reliability first.
-export async function scanVideo(video, onProgress, ensurePlay) {
+//
+// captureFrames: shared playback capture used by every sport.
+// scanVideo: baseball-style wrapper (capture + refine around peak motion).
+export async function captureFrames(video, onProgress, ensurePlay, label = 'Watching the movement…') {
   const dur = Math.min(video.duration, MAX_SCAN);
 
-  // Pass 1: real-time playback capture.
   video.muted = true;
   video.currentTime = 0;
   if (ensurePlay) await ensurePlay(video);
@@ -98,7 +100,7 @@ export async function scanVideo(video, onProgress, ensurePlay) {
     ? (cb) => video.requestVideoFrameCallback((_now, meta) => cb(meta.mediaTime))
     : (cb) => requestAnimationFrame(() => cb(video.currentTime));
 
-  const captured = await new Promise((resolve, reject) => {
+  return await new Promise((resolve, reject) => {
     const frames = [];
     let done = false;
     let lastT = -1;
@@ -129,12 +131,16 @@ export async function scanVideo(video, onProgress, ensurePlay) {
         lastT = mediaTime;
         const lm = detectAt(video);
         if (lm) frames.push({ t: mediaTime, landmarks: lm });
-        onProgress?.('Watching the swing…', 0.15 + 0.55 * (mediaTime / dur), `${mediaTime.toFixed(1)}s / ${dur.toFixed(1)}s`);
+        onProgress?.(label, 0.15 + 0.55 * (mediaTime / dur), `${mediaTime.toFixed(1)}s / ${dur.toFixed(1)}s`);
       }
       schedule(step);
     };
     schedule(step);
   });
+}
+
+export async function scanVideo(video, onProgress, ensurePlay) {
+  const captured = await captureFrames(video, onProgress, ensurePlay, 'Watching the swing…');
   if (captured.length < 4) return null;
 
   // Locate the swing: peak wrist motion across captured frames.
