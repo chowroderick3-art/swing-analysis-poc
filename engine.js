@@ -2,8 +2,7 @@
 // and skeleton overlay drawing. Used by every mode.
 import { FilesetResolver, PoseLandmarker } from './vendor/vision_bundle.mjs';
 
-const COARSE_STEP = 0.18;   // s between frames, pass 1 (find the swing)
-const FINE_STEP = 1 / 30;   // s between frames, pass 2 (measure the swing)
+const FINE_STEP = 1 / 30;   // s between frames, best-effort fine pass
 const FINE_BEFORE = 2.2;    // s before the motion peak to analyze
 const FINE_AFTER = 1.4;     // s after
 const MAX_SCAN = 40;        // s of video scanned in pass 1
@@ -51,13 +50,6 @@ export function seek(video, t, timeoutMs = 8000) {
   });
 }
 
-// One stuck frame must not kill an analysis: retry once with a nudged
-// timestamp, then report failure so callers can skip the frame.
-async function trySeek(video, t) {
-  try { await seek(video, t); return true; } catch { /* retry below */ }
-  try { await seek(video, t + 0.001); return true; } catch { return false; }
-}
-
 function detectAt(video) {
   fakeTs += 33.34;
   const res = landmarker.detectForVideo(video, fakeTs);
@@ -84,49 +76,95 @@ export async function loadVideoFile(video, file) {
   }
 }
 
-// Two-pass scan. Returns fine frames [{ t, landmarks }] around the swing.
-// Stuck seeks are skipped; only a long unbroken run of them aborts.
-export async function scanVideo(video, onProgress) {
+// Playback-capture scan: play the video once (muted) and capture pose
+// frames live via requestVideoFrameCallback. No seeking during analysis —
+// iOS Safari stalls seeks on camera-roll videos (cold decode pipeline,
+// Low Power Mode, HEVC), which froze the old seek-stepping scanner.
+// After playback we *attempt* a fine seek-stepped pass around the swing
+// for denser sampling (the pipeline is warm by then); if seeks still
+// stall we keep the playback-captured frames. Reliability first.
+export async function scanVideo(video, onProgress, ensurePlay) {
   const dur = Math.min(video.duration, MAX_SCAN);
-  const coarse = [];
-  let stuck = 0;
-  for (let t = 0; t < dur; t += COARSE_STEP) {
-    if (!(await trySeek(video, t))) {
-      if (++stuck >= 6) throw new Error('seek_stuck');
-      continue;
-    }
-    stuck = 0;
-    const lm = detectAt(video);
-    if (lm) coarse.push({ t, lm });
-    onProgress?.('Finding the swing…', 0.15 + 0.35 * (t / dur), `${t.toFixed(1)}s / ${dur.toFixed(1)}s`);
-  }
-  if (coarse.length < 4) return null;
 
-  let peakT = coarse[0].t, peakV = -1;
-  for (let i = 1; i < coarse.length; i++) {
-    const a = coarse[i - 1], b = coarse[i];
+  // Pass 1: real-time playback capture.
+  video.muted = true;
+  video.currentTime = 0;
+  if (ensurePlay) await ensurePlay(video);
+  else await video.play();
+
+  // requestVideoFrameCallback fires per presented frame (Safari 15.4+,
+  // Chrome); fall back to rAF polling of currentTime elsewhere.
+  const schedule = video.requestVideoFrameCallback
+    ? (cb) => video.requestVideoFrameCallback((_now, meta) => cb(meta.mediaTime))
+    : (cb) => requestAnimationFrame(() => cb(video.currentTime));
+
+  const captured = await new Promise((resolve, reject) => {
+    const frames = [];
+    let done = false;
+    let lastT = -1;
+    let lastTick = performance.now();
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearInterval(watchdog);
+      video.removeEventListener('ended', finish);
+      try { video.pause(); } catch { /* ignore */ }
+      resolve(frames);
+    };
+    video.addEventListener('ended', finish);
+    // If the decoder stops presenting frames mid-clip, salvage what we have
+    // (or fail clearly) instead of freezing the UI.
+    const watchdog = setInterval(() => {
+      if (done) return;
+      if (performance.now() - lastTick > 8000) {
+        if (frames.length >= 8) finish();
+        else { done = true; clearInterval(watchdog); reject(new Error('stalled')); }
+      }
+    }, 1000);
+    const step = (mediaTime) => {
+      if (done) return;
+      lastTick = performance.now();
+      if (mediaTime >= dur) return finish();
+      if (mediaTime - lastT >= 1 / 120) {       // skip duplicate presentations
+        lastT = mediaTime;
+        const lm = detectAt(video);
+        if (lm) frames.push({ t: mediaTime, landmarks: lm });
+        onProgress?.('Watching the swing…', 0.15 + 0.55 * (mediaTime / dur), `${mediaTime.toFixed(1)}s / ${dur.toFixed(1)}s`);
+      }
+      schedule(step);
+    };
+    schedule(step);
+  });
+  if (captured.length < 4) return null;
+
+  // Locate the swing: peak wrist motion across captured frames.
+  let peakT = captured[0].t, peakV = -1;
+  for (let i = 1; i < captured.length; i++) {
+    const a = captured[i - 1], b = captured[i];
     const d = (p, q) => Math.hypot(p.x - q.x, p.y - q.y);
-    const v = (d(b.lm[15], a.lm[15]) + d(b.lm[16], a.lm[16])) / (b.t - a.t || 1);
+    const v = (d(b.landmarks[15], a.landmarks[15]) + d(b.landmarks[16], a.landmarks[16])) / (b.t - a.t || 1);
     if (v > peakV) { peakV = v; peakT = b.t; }
   }
-
   const start = Math.max(0, peakT - FINE_BEFORE);
   const end = Math.min(video.duration - 0.01, peakT + FINE_AFTER);
-  const frames = [];
-  const n = Math.ceil((end - start) / FINE_STEP);
-  let i = 0;
-  stuck = 0;
-  for (let t = start; t <= end; t += FINE_STEP, i++) {
-    if (!(await trySeek(video, t))) {
-      if (++stuck >= 6) throw new Error('seek_stuck');
-      continue;
+  const windowFrames = captured.filter((f) => f.t >= start && f.t <= end);
+
+  // Pass 2 (best-effort): denser seek-stepped sampling of the swing window.
+  // Abort fast on the first sign of seek trouble — playback frames suffice.
+  const fine = [];
+  try {
+    const n = Math.ceil((end - start) / FINE_STEP);
+    let i = 0;
+    for (let t = start; t <= end; t += FINE_STEP, i++) {
+      await seek(video, t, 4000);
+      const lm = detectAt(video);
+      if (lm) fine.push({ t, landmarks: lm });
+      onProgress?.('Measuring the swing…', 0.7 + 0.25 * (i / n), `frame ${i + 1} of ~${n}`);
     }
-    stuck = 0;
-    const lm = detectAt(video);
-    if (lm) frames.push({ t, landmarks: lm });
-    onProgress?.('Measuring the swing…', 0.5 + 0.45 * (i / n), `frame ${i + 1} of ~${n}`);
+  } catch {
+    onProgress?.('Measuring the swing…', 0.95, 'using live-captured frames');
   }
-  return frames;
+  return fine.length > windowFrames.length ? fine : windowFrames;
 }
 
 const CONNECTIONS = [

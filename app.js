@@ -63,15 +63,47 @@ const personalBest = () => loadHistory().reduce((best, e) => (e.score !== null &
 
 /* ---------- analyze flow (shared by report / game / tutorial / compare) ---------- */
 
+// Playback normally starts automatically (the element is muted), but iOS
+// Low Power Mode blocks even muted playback without an explicit tap.
+async function ensurePlay(videoEl) {
+  try { await videoEl.play(); return; } catch { /* need a real tap */ }
+  $('progressLabel').textContent = 'Ready to analyze';
+  $('progressDetail').textContent = 'Your phone is blocking automatic video playback (often Low Power Mode) — tap to run the analysis.';
+  const btn = $('tapToStart');
+  btn.classList.remove('hidden');
+  await new Promise((resolve, reject) => {
+    btn.onclick = async () => {
+      btn.classList.add('hidden');
+      try { await videoEl.play(); resolve(); } catch { reject(new Error('autoplay')); }
+    };
+  });
+}
+
 async function analyzeFile(file, videoEl) {
   show('progressView');
+  $('tapToStart').classList.add('hidden');
   await getLandmarker(progress);
   await loadVideoFile(videoEl, file);
-  const frames = await scanVideo(videoEl, progress);
-  if (!frames || frames.length < 8) throw new Error('noperson');
-  const analysis = analyzeSwing(frames);
-  if (!analysis.ok) throw new Error('noswing');
-  return { frames, analysis, score: scoreSwing(analysis) };
+  // Keep the video visible while it plays through the analyzer — iOS can
+  // suspend hidden videos, and watching the clip beats a bare progress bar.
+  const stage = document.createElement('div');
+  stage.className = 'videoWrap';
+  stage.append(videoEl);
+  videoEl.classList.remove('offstage');
+  $('progressVideo').replaceChildren(stage);
+  try {
+    const frames = await scanVideo(videoEl, progress, ensurePlay);
+    if (!frames || frames.length < 8) throw new Error('noperson');
+    const analysis = analyzeSwing(frames);
+    if (!analysis.ok) throw new Error('noswing');
+    return { frames, analysis, score: scoreSwing(analysis) };
+  } finally {
+    // Park the video back offstage (result views re-parent it as needed) —
+    // dropping it from the DOM would break later getElementById lookups.
+    videoEl.classList.add('offstage');
+    document.querySelector('main').append(videoEl);
+    $('progressVideo').replaceChildren();
+  }
 }
 
 async function handleFile(file) {
@@ -97,8 +129,10 @@ async function handleFile(file) {
     fail(e.message === 'decode' ? 'This video format couldn’t be played in the browser. Try recording with the regular camera app.'
       : e.message === 'noperson' ? 'We couldn’t find a person clearly enough in this video. Make sure the whole body is visible and well lit, then try again.'
       : e.message === 'noswing' ? 'We found a person but couldn’t identify a swing in this clip. Try a video with one clear swing in it.'
-      : e.message === 'seek_stuck' || e.message === 'seek timeout'
+      : e.message === 'stalled' || e.message === 'seek_stuck' || e.message === 'seek timeout'
         ? `Your phone’s browser stopped serving video frames partway through — this can happen with long or 4K clips${diag}. Try trimming the clip to just the swing (5–10s) in your Photos app, then upload again.`
+      : e.message === 'autoplay'
+        ? 'Your phone is blocking video playback entirely (often Low Power Mode). Turn off Low Power Mode in Settings → Battery, or plug the phone in, then try again.'
       : `Something went wrong during analysis (${e.message})${diag}. Reload and try again.`);
   }
 }
