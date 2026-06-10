@@ -14,9 +14,35 @@
   </header>
 
   <main>
-    <section id="uploadCard" class="card">
-      <h2>Analyze a swing</h2>
-      <p>Record or pick a video of one swing. Any video works — slow-motion from the side works <em>best</em>, and we’ll tell you how much we could trust the result.</p>
+    <!-- ============ HOME: mode picker ============ -->
+    <section id="homeView">
+      <button class="modeCard" data-mode="report">
+        <span class="modeIcon">🎯</span>
+        <span><b>Coach Report</b><br /><small>The full honest assessment: key moments, measurements, strengths &amp; fixes.</small></span>
+      </button>
+      <button class="modeCard" data-mode="game">
+        <span class="modeIcon">🕹️</span>
+        <span><b>Swing Score</b><br /><small>Turn your swing into a game. Get a 0–100 score and beat your personal best.</small></span>
+      </button>
+      <button class="modeCard" data-mode="tutorial">
+        <span class="modeIcon">🎓</span>
+        <span><b>Swing School</b><br /><small>A guided tour through <em>your own</em> swing — learn what each phase does.</small></span>
+      </button>
+      <button class="modeCard" data-mode="compare">
+        <span class="modeIcon">⚖️</span>
+        <span><b>Side-by-Side</b><br /><small>Compare two swings, synced at contact. Before vs after, you vs teammate.</small></span>
+      </button>
+      <button class="modeCard" data-mode="progress">
+        <span class="modeIcon">📈</span>
+        <span><b>Progress</b><br /><small>Every analysis is saved on your device. Watch your trend over time.</small></span>
+      </button>
+    </section>
+
+    <!-- ============ shared upload + progress ============ -->
+    <section id="uploadView" class="card hidden">
+      <button class="backBtn" data-back>← All modes</button>
+      <h2 id="uploadTitle">Analyze a swing</h2>
+      <p id="uploadBlurb">Record or pick a video of one swing. Slow-motion from the side works best — and we’ll tell you how much we could trust the result.</p>
       <div class="buttons">
         <label class="btn primary">
           🎥 Record / choose video
@@ -26,43 +52,32 @@
       <p class="hint">Tip: one swing per clip, whole body in frame, a few seconds long.</p>
     </section>
 
-    <section id="progressCard" class="card hidden">
-      <h2 id="progressLabel">Loading analysis engine…</h2>
+    <section id="progressView" class="card hidden">
+      <h2 id="progressLabel">Working…</h2>
       <div class="bar"><div id="progressFill"></div></div>
       <p class="hint" id="progressDetail"></p>
     </section>
 
-    <section id="resultCard" class="hidden">
-      <div class="card">
-        <h2>Your swing</h2>
-        <div class="videoWrap">
-          <video id="video" playsinline muted></video>
-          <canvas id="overlay"></canvas>
-        </div>
-        <input id="scrubber" type="range" min="0" max="0" value="0" step="1" />
-        <div id="moments" class="chips"></div>
-      </div>
-
-      <div class="card" id="qualityCard"></div>
-      <div class="card" id="strengthsCard"></div>
-      <div class="card" id="improveCard"></div>
-      <div class="card" id="metricsCard"></div>
-      <div class="card honesty" id="honestyCard"></div>
-
-      <div class="buttons">
-        <button class="btn" id="resetBtn">↺ Analyze another swing</button>
-      </div>
-    </section>
-
-    <section id="errorCard" class="card hidden">
+    <section id="errorView" class="card hidden">
       <h2>Hmm, that didn’t work</h2>
       <p id="errorMsg"></p>
-      <div class="buttons"><button class="btn" id="errorReset">Try another video</button></div>
+      <div class="buttons"><button class="btn" data-back>Back to modes</button></div>
     </section>
+
+    <!-- ============ mode result views (filled by app.js) ============ -->
+    <section id="reportView" class="hidden"></section>
+    <section id="gameView" class="hidden"></section>
+    <section id="tutorialView" class="hidden"></section>
+    <section id="compareView" class="hidden"></section>
+    <section id="progressTrackView" class="hidden"></section>
+
+    <!-- shared hidden video elements used for decoding/scrubbing -->
+    <video id="videoA" playsinline muted class="offstage"></video>
+    <video id="videoB" playsinline muted class="offstage"></video>
   </main>
 
   <footer>
-    <p>POC v1 · body-only analysis (no bat tracking yet) · thresholds are heuristics, not medical/coaching standards.</p>
+    <p>POC v2.1 · body-only analysis (no bat tracking yet) · thresholds are heuristics, not medical/coaching standards.</p>
   </footer>
 
   <script type="module" src="app.js"></script>

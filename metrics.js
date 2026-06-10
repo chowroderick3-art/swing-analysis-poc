@@ -347,3 +347,55 @@ function notMeasuredList(metrics, quality) {
   });
   return items;
 }
+
+/* ---------- composite swing score (game + progress modes) ---------- */
+
+const SCORE_WEIGHTS = { headDrift: 30, sequence: 20, stride: 15, frontKnee: 15, posture: 10 };
+const BAND_CREDIT = {
+  headDrift: { good: 1, fair: 0.6, needs_work: 0.25 },
+  sequence: { good: 1, check: 0.4 },
+  stride: { good: 1, short: 0.55, long: 0.5 },
+  frontKnee: { good: 1, soft: 0.4 },
+  posture: { good: 1, check: 0.5 },
+};
+
+// Score only what was actually measured; normalize over available weights so
+// a low-quality video shrinks the scorecard instead of silently penalizing.
+export function scoreSwing(analysis) {
+  if (!analysis?.ok) return null;
+  const parts = [];
+  let earned = 0, possible = 0;
+  for (const m of analysis.metrics) {
+    const weight = SCORE_WEIGHTS[m.id];
+    if (!weight) continue;
+    if (m.confidence === 'none' || m.band === 'unknown') {
+      parts.push({ id: m.id, label: m.label, scored: false });
+      continue;
+    }
+    const credit = BAND_CREDIT[m.id]?.[m.band] ?? 0.5;
+    earned += weight * credit;
+    possible += weight;
+    parts.push({ id: m.id, label: m.label, scored: true, credit, weight, points: Math.round(weight * credit) });
+  }
+  if (possible === 0) return null;
+  const score = Math.round((earned / possible) * 100);
+  const grade = score >= 90 ? 'A' : score >= 80 ? 'B+' : score >= 70 ? 'B' : score >= 60 ? 'C+' : score >= 50 ? 'C' : 'Keep swinging';
+  return { score, grade, parts, scoredCount: parts.filter((p) => p.scored).length, totalCount: parts.length };
+}
+
+/* ---------- timeline alignment (side-by-side mode) ---------- */
+
+// Map two analyzed swings onto a shared 0..steps-1 timeline anchored at
+// contact: first half = windowStart->contact, second half = contact->finish.
+export function alignTimelines(a, b, steps = 60) {
+  const half = Math.floor(steps / 2);
+  const lane = (an) => {
+    const start = an.keyMoments.strideStart ?? an.keyMoments.stance ?? 0;
+    const { contact, finish } = an.keyMoments;
+    const idx = [];
+    for (let i = 0; i < half; i++) idx.push(Math.round(start + ((contact - start) * i) / (half - 1 || 1)));
+    for (let i = 0; i < steps - half; i++) idx.push(Math.round(contact + ((finish - contact) * i) / (steps - half - 1 || 1)));
+    return idx;
+  };
+  return { a: lane(a), b: lane(b), contactStep: half };
+}
